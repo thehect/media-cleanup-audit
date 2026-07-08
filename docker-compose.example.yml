@@ -1,0 +1,18 @@
+services:
+  mediacleanup:
+    build: .
+    container_name: mediacleanup
+    hostname: MEDIACLEANUP
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - ./reports:/reports
+      - /your/nas/mount:/data:ro
+    ports:
+      - "6996:6996"
+    environment:
+      JELLYFIN_API_KEY: change-me
+      RADARR_API_KEY: change-me
+      SONARR_API_KEY: change-me
+      QBIT_USER: admin
+      QBIT_PASS: change-me
+    command: ["--serve", "--config", "/app/config.yml", "--output-dir", "/reports", "--port", "6996"]

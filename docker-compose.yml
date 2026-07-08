@@ -1,0 +1,19 @@
+services:
+  mediacleanup:
+    build: .
+    container_name: mediacleanup
+    hostname: MEDIACLEANUP
+    restart: unless-stopped
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - ./reports:/reports
+      - ${MEDIA_ROOT:-/mnt/media}:/data:ro
+    ports:
+      - "${MEDIACLEANUP_PORT:-6996}:6996"
+    environment:
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
+      RADARR_API_KEY: ${RADARR_API_KEY:-}
+      SONARR_API_KEY: ${SONARR_API_KEY:-}
+      QBIT_USER: ${QBIT_USER:-}
+      QBIT_PASS: ${QBIT_PASS:-}
+    command: ["--serve", "--config", "/app/config.yml", "--output-dir", "/reports", "--port", "6996"]

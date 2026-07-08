@@ -1,0 +1,49 @@
+media_roots:
+  movies: /data/media/movies
+  tv: /data/media/tv
+  downloads: /data/downloads
+  erase_later: /data/media/_erase_later
+
+scan:
+  roots:
+    - /data/media
+    - /data/downloads
+  video_extensions:
+    - .mkv
+    - .mp4
+    - .m4v
+    - .avi
+    - .mov
+    - .wmv
+    - .ts
+    - .m2ts
+    - .mpg
+    - .mpeg
+    - .webm
+  ignore_path_keywords:
+    - sample
+    - trailer
+    - extras
+    - behind the scenes
+    - featurettes
+
+jellyfin:
+  enabled: true
+  url: http://jellyfin:8096
+  api_key: ${JELLYFIN_API_KEY}
+
+radarr:
+  enabled: true
+  url: http://radarr:7878
+  api_key: ${RADARR_API_KEY}
+
+sonarr:
+  enabled: true
+  url: http://sonarr:8989
+  api_key: ${SONARR_API_KEY}
+
+qbittorrent:
+  enabled: true
+  url: http://qbittorrent:8080
+  username: ${QBIT_USER}
+  password: ${QBIT_PASS}
