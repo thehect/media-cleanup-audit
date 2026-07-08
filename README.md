@@ -76,6 +76,22 @@ chmod +x run-mediacleanup.sh
 ./run-mediacleanup.sh https://github.com/YOUR_USER/YOUR_REPO.git
 ```
 
+## Publishing To GitHub
+
+From this project folder, after `gh auth login -h github.com`:
+
+```bash
+./publish-to-github.sh media-cleanup-audit
+```
+
+On Windows PowerShell:
+
+```powershell
+.\publish-to-github.ps1 -RepoName media-cleanup-audit
+```
+
+The default visibility is private. Set `VISIBILITY=public` for the shell script, or `-Visibility public` in PowerShell, if you want a public repo.
+
 ## Example Docker Compose Service
 
 ```yaml
