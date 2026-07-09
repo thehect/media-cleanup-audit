@@ -63,6 +63,10 @@ With qBittorrent disabled, the app cannot know whether a download is still seedi
 
 Duplicate candidates show a compare view before quarantine: `Quarantine This` on one side and `Keep This` on the other. Use it to verify the larger file being moved and the smaller/imported file that will remain.
 
+## Mobile Use
+
+The dashboard is responsive for phone review through a tunnel. On small screens it switches to one-column cards, larger checkboxes, larger buttons, sticky top controls, and quick section buttons for Downloads, Duplicates, Safe, and Quarantine.
+
 ## Quick Start
 
 1. Clone this repo onto your media server.

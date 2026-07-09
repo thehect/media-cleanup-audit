@@ -98,6 +98,8 @@ class MediaCleanupAuditTests(unittest.TestCase):
         self.assertIn("Duplicate Candidates", body)
         self.assertIn("Quarantined", body)
         self.assertIn("Type DELETE", body)
+        self.assertIn("mobile-tabs", body)
+        self.assertIn("downloadsCard", body)
 
     def test_dashboard_status_includes_latest_report_names(self):
         result = AuditResult(

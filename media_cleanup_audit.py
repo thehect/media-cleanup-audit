@@ -1627,13 +1627,14 @@ def render_dashboard(state: DashboardState) -> str:
       --red: #b42318; --soft: #eef4ff;
     }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }}
-    main {{ max-width: 1240px; margin: 0 auto; padding: 24px; }}
-    header {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }}
+    html {{ scroll-behavior: smooth; }}
+    body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); -webkit-text-size-adjust: 100%; }}
+    main {{ max-width: 1240px; margin: 0 auto; padding: 24px 24px 96px; }}
+    header {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; position: sticky; top: 0; z-index: 10; background: rgba(244,246,248,.96); padding: 12px 0; backdrop-filter: blur(8px); }}
     h1 {{ margin: 0; font-size: 28px; }}
     h2 {{ margin: 0; font-size: 17px; }}
     .header-actions, .actions, .links {{ display: flex; gap: 10px; flex-wrap: wrap; }}
-    button, .link {{ border: 1px solid var(--line); border-radius: 8px; padding: 10px 13px; background: #fff; color: var(--ink); font-weight: 800; cursor: pointer; text-decoration: none; }}
+    button, .link {{ border: 1px solid var(--line); border-radius: 8px; padding: 10px 13px; min-height: 44px; background: #fff; color: var(--ink); font-weight: 800; cursor: pointer; text-decoration: none; touch-action: manipulation; }}
     .primary {{ background: var(--blue); color: #fff; border-color: var(--blue); }}
     .danger {{ background: var(--red); color: #fff; border-color: var(--red); }}
     button[disabled] {{ opacity: .55; cursor: wait; }}
@@ -1648,8 +1649,9 @@ def render_dashboard(state: DashboardState) -> str:
     .label {{ color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 900; letter-spacing: .04em; }}
     .value {{ margin-top: 6px; font-size: 22px; font-weight: 900; overflow-wrap: anywhere; }}
     .green {{ color: var(--green); }} .amber {{ color: var(--amber); }} .red {{ color: var(--red); }}
-    .list {{ display: grid; gap: 8px; max-height: 440px; overflow: auto; padding-right: 2px; }}
+    .list {{ display: grid; gap: 8px; max-height: 440px; overflow: auto; padding-right: 2px; -webkit-overflow-scrolling: touch; }}
     .item {{ display: grid; grid-template-columns: 28px 1fr; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; }}
+    input[type="checkbox"] {{ width: 22px; height: 22px; margin-top: 2px; accent-color: var(--blue); }}
     .item-title {{ font-weight: 850; overflow-wrap: anywhere; }}
     .compare {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }}
     .compare-box {{ border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fbfcfe; min-width: 0; }}
@@ -1661,10 +1663,13 @@ def render_dashboard(state: DashboardState) -> str:
     .pill.medium {{ background: #fffaeb; color: var(--amber); }}
     .notice {{ padding: 12px 14px; border-radius: 8px; background: #fff7ed; border: 1px solid #fed7aa; color: #7c2d12; }}
     .error {{ background: #fef3f2; border-color: #fecdca; color: var(--red); }}
+    .mobile-tabs {{ display: none; }}
+    .mobile-tabs button {{ flex: 1 1 auto; min-width: 88px; padding: 9px 10px; font-size: 12px; }}
     .dot {{ width: 10px; height: 10px; border-radius: 999px; background: var(--green); display: inline-block; margin-right: 8px; }}
     .busy {{ background: var(--amber); animation: pulse 1s infinite; }}
     @keyframes pulse {{ 0%, 100% {{ opacity: .35 }} 50% {{ opacity: 1 }} }}
-    @media (max-width: 900px) {{ main {{ padding: 16px; }} header {{ flex-direction: column; align-items: stretch; }} .layout, .stats, .compare {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 900px) {{ main {{ padding: 12px 12px 108px; }} header {{ flex-direction: column; align-items: stretch; margin: 0 -12px 12px; padding: 12px; }} h1 {{ font-size: 24px; }} .layout, .stats, .compare {{ grid-template-columns: 1fr; }} .header-actions button {{ flex: 1; }} .card {{ padding: 13px; }} .card-head {{ align-items: stretch; flex-direction: column; }} .actions button {{ flex: 1 1 150px; }} .list {{ max-height: none; }} .path {{ font-size: 11px; }} .pill {{ font-size: 11px; max-width: 100%; }} .mobile-tabs {{ position: sticky; top: 92px; z-index: 9; display: flex; gap: 8px; overflow-x: auto; margin: 0 -12px 12px; padding: 8px 12px; background: rgba(244,246,248,.96); border-bottom: 1px solid var(--line); backdrop-filter: blur(8px); }} }}
+    @media (max-width: 520px) {{ h1 {{ font-size: 22px; }} h2 {{ font-size: 16px; }} button, .link {{ width: 100%; }} .item {{ grid-template-columns: 34px 1fr; padding: 12px; }} input[type="checkbox"] {{ width: 26px; height: 26px; }} .compare-box {{ padding: 9px; }} .links a {{ flex: 1 1 100%; text-align: center; }} }}
   </style>
 </head>
 <body>
@@ -1680,9 +1685,15 @@ def render_dashboard(state: DashboardState) -> str:
       </div>
     </header>
     <div id="message"></div>
+    <nav class="mobile-tabs" aria-label="Cleanup sections">
+      <button onclick="scrollToCard('downloadsCard')">Downloads</button>
+      <button onclick="scrollToCard('duplicatesCard')">Duplicates</button>
+      <button onclick="scrollToCard('safeCard')">Safe</button>
+      <button onclick="scrollToCard('quarantineCard')">Quarantine</button>
+    </nav>
     <section class="stats" id="libraryHealth"></section>
     <section class="layout" style="margin-top:14px;">
-      <div class="card wide">
+      <div class="card wide" id="downloadsCard">
         <div class="card-head">
           <div>
             <h2>Downloads Cleanup</h2>
@@ -1696,7 +1707,7 @@ def render_dashboard(state: DashboardState) -> str:
         </div>
         <div class="list" id="downloads" style="margin-top:12px;"></div>
       </div>
-      <div class="card">
+      <div class="card" id="duplicatesCard">
         <div class="card-head"><h2>Scanned</h2><span class="meta" id="scanTotal"></span></div>
         <div id="scanned"></div>
       </div>
@@ -1708,7 +1719,7 @@ def render_dashboard(state: DashboardState) -> str:
         </div>
         <div class="list" id="quarantined" style="margin-top:12px;"></div>
       </div>
-      <div class="card">
+      <div class="card" id="safeCard">
         <div class="card-head"><h2>Duplicate Candidates</h2><span class="meta" id="duplicateSummary"></span></div>
         <div class="actions">
           <button onclick="reviewCard('duplicates')">Review</button>
