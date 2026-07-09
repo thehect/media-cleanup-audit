@@ -13,6 +13,7 @@ from media_cleanup_audit import (
     resolve_media_file_path,
     validate_config,
     fetch_jellyfin_user_id,
+    fetch_sonarr,
 )
 
 
@@ -115,6 +116,31 @@ class MediaCleanupAuditTests(unittest.TestCase):
                 {"Id": "enabled", "Policy": {"IsDisabled": False}},
             ]
             self.assertEqual(fetch_jellyfin_user_id("http://jellyfin:8096", {}), "enabled")
+        finally:
+            media_cleanup_audit.api_get = original
+
+    def test_sonarr_episode_files_are_fetched_by_series(self):
+        import media_cleanup_audit
+
+        calls = []
+        original = media_cleanup_audit.api_get
+
+        def fake_api_get(url, headers=None, params=None, label="API request"):
+            calls.append((url, params or {}))
+            if url.endswith("/api/v3/series"):
+                return [{"id": 10, "title": "Show", "path": "/data/media/tv/Show"}]
+            if url.endswith("/api/v3/episode"):
+                return [{"id": 20, "seriesId": 10, "episodeFileId": 30, "seasonNumber": 1, "episodeNumber": 1}]
+            if url.endswith("/api/v3/episodefile"):
+                return [{"id": 30, "relativePath": "Season 01/Show.S01E01.mkv"}]
+            return []
+
+        try:
+            media_cleanup_audit.api_get = fake_api_get
+            data = fetch_sonarr({"sonarr": {"enabled": True, "url": "http://sonarr:8989", "api_key": "key"}})
+            self.assertIn(30, data["episode_files"])
+            self.assertIn(("http://sonarr:8989/api/v3/episodefile", {"seriesId": 10}), calls)
+            self.assertFalse(any("episodeFileIds" in params for _, params in calls))
         finally:
             media_cleanup_audit.api_get = original
 

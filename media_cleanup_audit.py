@@ -311,16 +311,18 @@ def fetch_sonarr(config: dict[str, Any]) -> dict[str, Any]:
     log("Reading Sonarr series and episodes...")
     series = api_get(f"{url}/api/v3/series", headers=headers, label="Sonarr series library")
     episodes: list[dict[str, Any]] = []
+    episode_files: dict[int, Any] = {}
     for item in series:
         series_id = item.get("id")
         if series_id is None:
             continue
         episodes.extend(api_get(f"{url}/api/v3/episode", headers=headers, params={"seriesId": series_id}, label=f"Sonarr episodes for series {series_id}"))
-    episode_file_ids = sorted({e.get("episodeFileId") for e in episodes if e.get("episodeFileId")})
-    episode_files: dict[int, Any] = {}
-    for chunk in chunks(episode_file_ids, 100):
-        ids = ",".join(str(i) for i in chunk)
-        for item in api_get(f"{url}/api/v3/episodefile", headers=headers, params={"episodeFileIds": ids}, label="Sonarr episode files"):
+        for item in api_get(
+            f"{url}/api/v3/episodefile",
+            headers=headers,
+            params={"seriesId": series_id},
+            label=f"Sonarr episode files for series {series_id}",
+        ):
             episode_files[int(item["id"])] = item
     return {"series": series, "episodes": episodes, "episode_files": episode_files}
 
