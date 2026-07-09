@@ -53,10 +53,10 @@ http://your-server-ip:6996
 
 Reports are written to `/reports` inside the container. Mount that to a host folder so you can also open/download the generated files directly.
 
-By default, the included compose file attaches to an external Docker network named `proxy_network`, because Media Cleanup needs to resolve names like `jellyfin`, `radarr`, and `sonarr`. Override that when needed:
+By default, the included compose file mounts `/mnt/Movies`, `/mnt/TvShows`, `/mnt/Anime`, and `/mnt/downloads`, then attaches to an external Docker network named `proxy_network`, because Media Cleanup needs to resolve names like `jellyfin`, `radarr`, and `sonarr`. Override paths or network when needed:
 
 ```bash
-MEDIA_NETWORK=your_media_network docker compose up -d --build mediacleanup
+MOVIES_ROOT=/mnt/Movies TVSHOWS_ROOT=/mnt/TvShows ANIME_ROOT=/mnt/Anime DOWNLOADS_ROOT=/mnt/downloads MEDIA_NETWORK=your_media_network docker compose up -d --build mediacleanup
 ```
 
 ## One-Command GitHub Install
@@ -109,7 +109,10 @@ services:
     volumes:
       - ./config.yml:/app/config.yml:ro
       - ./reports:/reports
-      - /your/nas/mount:/data:ro
+      - /mnt/Movies:/data/movies:ro
+      - /mnt/TvShows:/data/tvshows:ro
+      - /mnt/Anime:/data/anime:ro
+      - /mnt/downloads:/data/downloads:ro
     ports:
       - "6996:6996"
     networks:

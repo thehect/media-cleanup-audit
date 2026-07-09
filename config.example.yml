@@ -1,12 +1,29 @@
 media_roots:
-  movies: /data/media/movies
-  tv: /data/media/tv
+  movies: /data/movies
+  tv: /data/tvshows
   downloads: /data/downloads
-  erase_later: /data/media/_erase_later
+  erase_later: /data/_erase_later
+
+# Optional aliases for stacks where apps see the same folders at different paths.
+# Example:
+# path_mappings:
+#   - from: /movies
+#     to: /data/movies
+path_mappings:
+  - from: /movies
+    to: /data/movies
+  - from: /tvshows
+    to: /data/tvshows
+  - from: /anime
+    to: /data/anime
+  - from: /downloads
+    to: /data/downloads
 
 scan:
   roots:
-    - /data/media
+    - /data/movies
+    - /data/tvshows
+    - /data/anime
     - /data/downloads
   video_extensions:
     - .mkv

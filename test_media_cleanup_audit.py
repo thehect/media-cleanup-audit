@@ -7,6 +7,7 @@ from media_cleanup_audit import (
     MediaGroup,
     VideoFile,
     classify_groups,
+    canonicalize_path,
     gather_episode_candidates,
     render_dashboard,
     render_status,
@@ -143,6 +144,22 @@ class MediaCleanupAuditTests(unittest.TestCase):
             self.assertFalse(any("episodeFileIds" in params for _, params in calls))
         finally:
             media_cleanup_audit.api_get = original
+
+    def test_path_mappings_canonicalize_app_paths(self):
+        config = {
+            "path_mappings": [
+                {"from": "/movies", "to": "/data/movies"},
+                {"from": "/tvshows", "to": "/data/tvshows"},
+            ]
+        }
+        self.assertEqual(
+            canonicalize_path(config, "/movies/Arrival (2016)/Arrival.mkv"),
+            "/data/movies/arrival (2016)/arrival.mkv",
+        )
+        self.assertEqual(
+            canonicalize_path(config, "/tvshows/Show/Season 01/Show.S01E01.mkv"),
+            "/data/tvshows/show/season 01/show.s01e01.mkv",
+        )
 
 
 if __name__ == "__main__":

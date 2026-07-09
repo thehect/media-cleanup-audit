@@ -6,7 +6,10 @@ services:
     volumes:
       - ./config.yml:/app/config.yml:ro
       - ./reports:/reports
-      - /your/nas/mount:/data:ro
+      - /mnt/Movies:/data/movies:ro
+      - /mnt/TvShows:/data/tvshows:ro
+      - /mnt/Anime:/data/anime:ro
+      - /mnt/downloads:/data/downloads:ro
     ports:
       - "6996:6996"
     networks:

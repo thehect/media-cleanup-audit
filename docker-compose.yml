@@ -7,7 +7,10 @@ services:
     volumes:
       - ./config.yml:/app/config.yml:ro
       - ./reports:/reports
-      - ${MEDIA_ROOT:-/mnt/media}:/data:ro
+      - ${MOVIES_ROOT:-/mnt/Movies}:/data/movies:ro
+      - ${TVSHOWS_ROOT:-/mnt/TvShows}:/data/tvshows:ro
+      - ${ANIME_ROOT:-/mnt/Anime}:/data/anime:ro
+      - ${DOWNLOADS_ROOT:-/mnt/downloads}:/data/downloads:ro
     ports:
       - "${MEDIACLEANUP_PORT:-6996}:6996"
     networks:

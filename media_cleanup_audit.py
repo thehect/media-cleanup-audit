@@ -224,6 +224,32 @@ def normalize_path(path: str) -> str:
     return p.lower()
 
 
+def canonicalize_path(config: dict[str, Any], path: str) -> str:
+    mapped = apply_path_mappings(config, path)
+    return normalize_path(mapped)
+
+
+def apply_path_mappings(config: dict[str, Any], path: str) -> str:
+    if not path:
+        return path
+    mappings = config.get("path_mappings", []) or []
+    path_text = path.replace("\\", "/")
+    path_norm = normalize_path(path_text)
+    ordered = sorted(mappings, key=lambda m: len(str(m.get("from", ""))), reverse=True)
+    for mapping in ordered:
+        source = str(mapping.get("from", "")).replace("\\", "/").rstrip("/")
+        target = str(mapping.get("to", "")).replace("\\", "/").rstrip("/")
+        if not source or not target:
+            continue
+        source_norm = normalize_path(source)
+        if path_norm == source_norm:
+            return target
+        if path_norm.startswith(source_norm + "/"):
+            suffix = path_text[len(source):].lstrip("/")
+            return f"{target}/{suffix}" if suffix else target
+    return path_text
+
+
 def is_under(path: str, root: str) -> bool:
     path_n = normalize_path(path)
     root_n = normalize_path(root)
@@ -361,7 +387,7 @@ def fetch_jellyfin_paths(config: dict[str, Any]) -> set[str]:
         for item in items:
             item_path = item.get("Path")
             if item_path:
-                paths.add(normalize_path(item_path))
+                paths.add(canonicalize_path(config, item_path))
         total = payload.get("TotalRecordCount", 0)
         start += len(items)
         if start >= total or not items:
@@ -403,11 +429,11 @@ def fetch_qbit_paths(config: dict[str, Any]) -> set[str]:
         content_path = torrent.get("content_path")
         save_path = torrent.get("save_path")
         if content_path:
-            paths.add(normalize_path(content_path))
+            paths.add(canonicalize_path(config, content_path))
         elif save_path and torrent.get("name"):
-            paths.add(normalize_path(posixpath.join(str(save_path), str(torrent["name"]))))
+            paths.add(canonicalize_path(config, posixpath.join(str(save_path), str(torrent["name"]))))
         elif save_path:
-            paths.add(normalize_path(save_path))
+            paths.add(canonicalize_path(config, save_path))
     return paths
 
 
@@ -441,7 +467,7 @@ def scan_video_files(config: dict[str, Any]) -> list[VideoFile]:
             found.append(
                 VideoFile(
                     path=path_text,
-                    norm_path=normalize_path(path_text),
+                    norm_path=canonicalize_path(config, path_text),
                     size=stat.st_size,
                     device=getattr(stat, "st_dev", None),
                     inode=getattr(stat, "st_ino", None),
@@ -479,10 +505,10 @@ def build_groups(
     for movie in radarr_data.get("movies", []):
         movie_id = movie.get("id")
         title = movie.get("title") or movie.get("originalTitle") or f"Movie {movie_id}"
-        expected = movie.get("path", "")
+        expected = apply_path_mappings(config, str(movie.get("path", "")))
         candidates = gather_movie_candidates(files, expected)
         movie_file = movie.get("movieFile") or {}
-        movie_path = resolve_media_file_path(expected, movie_file)
+        movie_path = apply_path_mappings(config, resolve_media_file_path(str(movie.get("path", "")), movie_file))
         if movie_path:
             candidates.extend(match_exact_or_same_dir(files, movie_path))
         candidates = expand_by_hardlink(files, unique_files(candidates))
@@ -502,8 +528,9 @@ def build_groups(
         first = episodes[0] if episodes else {}
         series = series_by_id.get(first.get("seriesId"), {})
         title = format_episode_title(series, episodes, file_id)
-        series_path = series.get("path", "")
-        episode_path = resolve_media_file_path(series_path, episode_file)
+        raw_series_path = str(series.get("path", ""))
+        series_path = apply_path_mappings(config, raw_series_path)
+        episode_path = apply_path_mappings(config, resolve_media_file_path(raw_series_path, episode_file))
         candidates = gather_episode_candidates(files, episode_path, series_path, episodes)
         candidates = expand_by_hardlink(files, unique_files(candidates))
         if candidates:
