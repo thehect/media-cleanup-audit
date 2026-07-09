@@ -95,6 +95,7 @@ class MediaCleanupAuditTests(unittest.TestCase):
             output_dir=Path("/reports"),
             summary_rows=[{"safe_cleanup_count": 2, "review_count": 1, "reclaimable_bytes": 1000}],
             detail_rows=[],
+            diagnostic_rows=[],
             files_scanned=10,
             groups_count=3,
             unmatched_count=4,

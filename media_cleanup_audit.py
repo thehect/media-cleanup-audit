@@ -84,6 +84,7 @@ class AuditResult:
     output_dir: Path
     summary_rows: list[dict[str, Any]]
     detail_rows: list[dict[str, Any]]
+    diagnostic_rows: list[dict[str, Any]]
     files_scanned: int
     groups_count: int
     unmatched_count: int
@@ -363,10 +364,10 @@ def chunks(values: list[Any], size: int) -> list[list[Any]]:
     return [values[i : i + size] for i in range(0, len(values), size)]
 
 
-def fetch_jellyfin_paths(config: dict[str, Any]) -> set[str]:
+def fetch_jellyfin_paths(config: dict[str, Any]) -> tuple[set[str], list[str]]:
     jellyfin = config.get("jellyfin", {})
     if not jellyfin.get("enabled", True):
-        return set()
+        return set(), []
     url = str(jellyfin["url"]).rstrip("/")
     headers = {"X-Emby-Token": str(jellyfin["api_key"])}
     log("Reading Jellyfin visible media paths...")
@@ -374,6 +375,7 @@ def fetch_jellyfin_paths(config: dict[str, Any]) -> set[str]:
     if not user_id:
         user_id = fetch_jellyfin_user_id(url, headers)
     paths: set[str] = set()
+    raw_paths: list[str] = []
     start = 0
     limit = 1000
     while True:
@@ -393,12 +395,13 @@ def fetch_jellyfin_paths(config: dict[str, Any]) -> set[str]:
         for item in items:
             item_path = item.get("Path")
             if item_path:
+                raw_paths.append(str(item_path))
                 paths.add(canonicalize_path(config, item_path))
         total = payload.get("TotalRecordCount", 0)
         start += len(items)
         if start >= total or not items:
             break
-    return paths
+    return paths, raw_paths
 
 
 def fetch_jellyfin_user_id(url: str, headers: dict[str, str]) -> str:
@@ -566,6 +569,40 @@ def build_groups(
 
     unmatched = [vf for vf in files if vf.norm_path not in matched_paths]
     return groups, unmatched
+
+
+def diagnostic_rows(
+    config: dict[str, Any],
+    files: list[VideoFile],
+    radarr_data: dict[str, Any],
+    sonarr_data: dict[str, Any],
+    jellyfin_raw_paths: list[str],
+    jellyfin_paths: set[str],
+    qbit_paths: set[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for vf in files[:10]:
+        rows.append({"source": "filesystem", "raw_path": vf.path, "mapped_path": vf.norm_path})
+    for movie in radarr_data.get("movies", [])[:10]:
+        raw = str(movie.get("path", ""))
+        movie_file = movie.get("movieFile") or {}
+        raw_file = resolve_media_file_path(raw, movie_file)
+        rows.append({"source": "radarr_movie", "raw_path": raw, "mapped_path": canonicalize_path(config, raw)})
+        if raw_file:
+            rows.append({"source": "radarr_movie_file", "raw_path": raw_file, "mapped_path": canonicalize_path(config, raw_file)})
+    for series in sonarr_data.get("series", [])[:10]:
+        raw = str(series.get("path", ""))
+        rows.append({"source": "sonarr_series", "raw_path": raw, "mapped_path": canonicalize_path(config, raw)})
+    for episode_file in list(sonarr_data.get("episode_files", {}).values())[:10]:
+        raw = str(episode_file.get("path") or episode_file.get("relativePath") or "")
+        rows.append({"source": "sonarr_episode_file", "raw_path": raw, "mapped_path": canonicalize_path(config, raw)})
+    for raw in jellyfin_raw_paths[:10]:
+        rows.append({"source": "jellyfin", "raw_path": raw, "mapped_path": canonicalize_path(config, raw)})
+    for mapped in sorted(jellyfin_paths)[:10]:
+        rows.append({"source": "jellyfin_mapped", "raw_path": "", "mapped_path": mapped})
+    for mapped in sorted(qbit_paths)[:10]:
+        rows.append({"source": "qbittorrent_mapped", "raw_path": "", "mapped_path": mapped})
+    return rows
 
 
 def resolve_media_file_path(base_path: str, media_file: dict[str, Any]) -> str:
@@ -844,10 +881,12 @@ def write_html(
     path: Path,
     summary_rows: list[dict[str, Any]],
     detail_rows: list[dict[str, Any]],
+    diagnostic_rows: list[dict[str, Any]] | None = None,
     counts: dict[str, int] | None = None,
 ) -> None:
     safe_bytes = sum(int(row.get("reclaimable_bytes", 0) or 0) for row in summary_rows)
     counts = counts or {}
+    diagnostic_rows = diagnostic_rows or []
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'>",
         "<title>Media Cleanup Audit</title>",
@@ -869,6 +908,8 @@ def write_html(
         table_html(summary_rows),
         "<h2>Details</h2>",
         table_html(detail_rows),
+        "<h2>Path Diagnostics</h2>",
+        table_html(diagnostic_rows),
         "</body></html>",
     ]
     path.write_text("\n".join(parts), encoding="utf-8")
@@ -882,7 +923,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
 
     radarr = fetch_radarr(config)
     sonarr = fetch_sonarr(config)
-    jellyfin_paths = fetch_jellyfin_paths(config)
+    jellyfin_paths, jellyfin_raw_paths = fetch_jellyfin_paths(config)
     qbit_paths = fetch_qbit_paths(config)
     scan_result = scan_video_files(config)
     files = annotate_files(scan_result.files, jellyfin_paths, qbit_paths)
@@ -890,6 +931,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
     summary_rows, detail_rows = classify_groups(config, groups)
     detail_rows.extend(unmatched_rows(unmatched))
     detail_rows.extend(scan_error_rows(scan_result.errors))
+    diagnostics = diagnostic_rows(config, files, radarr, sonarr, jellyfin_raw_paths, jellyfin_paths, qbit_paths)
 
     summary_csv = output_path / f"media-cleanup-summary-{stamp}.csv"
     details_csv = output_path / f"media-cleanup-details-{stamp}.csv"
@@ -902,6 +944,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
         "generated_at": datetime.now().isoformat(),
         "summary": summary_rows,
         "details": detail_rows,
+        "diagnostics": diagnostics,
         "counts": {
             "files_scanned": len(files),
             "groups": len(groups),
@@ -909,13 +952,14 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
             "scan_errors": len(scan_result.errors),
         },
     }
-    write_html(html_report, summary_rows, detail_rows, raw["counts"])
+    write_html(html_report, summary_rows, detail_rows, diagnostics, raw["counts"])
     raw_json.write_text(json.dumps(raw, indent=2), encoding="utf-8")
     return AuditResult(
         stamp=stamp,
         output_dir=output_path,
         summary_rows=summary_rows,
         detail_rows=detail_rows,
+        diagnostic_rows=diagnostics,
         files_scanned=len(files),
         groups_count=len(groups),
         unmatched_count=len(unmatched),
