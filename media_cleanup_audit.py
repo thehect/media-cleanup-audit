@@ -762,8 +762,14 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def write_html(path: Path, summary_rows: list[dict[str, Any]], detail_rows: list[dict[str, Any]]) -> None:
+def write_html(
+    path: Path,
+    summary_rows: list[dict[str, Any]],
+    detail_rows: list[dict[str, Any]],
+    counts: dict[str, int] | None = None,
+) -> None:
     safe_bytes = sum(int(row.get("reclaimable_bytes", 0) or 0) for row in summary_rows)
+    counts = counts or {}
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'>",
         "<title>Media Cleanup Audit</title>",
@@ -772,6 +778,14 @@ def write_html(path: Path, summary_rows: list[dict[str, Any]], detail_rows: list
         "<h1>Media Cleanup Audit</h1>",
         f"<p><strong>Potential reclaimable space:</strong> {html.escape(human_size(safe_bytes))}</p>",
         f"<p class='muted'>Generated {html.escape(datetime.now().isoformat(timespec='seconds'))}</p>",
+        "<h2>Run Stats</h2>",
+        table_html([{
+            "files_scanned": counts.get("files_scanned", 0),
+            "matched_groups": counts.get("groups", 0),
+            "unmatched_files": counts.get("unmatched", 0),
+            "summary_rows": len(summary_rows),
+            "detail_rows": len(detail_rows),
+        }]),
         "<h2>Summary</h2>",
         table_html(summary_rows),
         "<h2>Details</h2>",
@@ -803,7 +817,6 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
 
     write_csv(summary_csv, summary_rows)
     write_csv(details_csv, detail_rows)
-    write_html(html_report, summary_rows, detail_rows)
     raw = {
         "generated_at": datetime.now().isoformat(),
         "summary": summary_rows,
@@ -814,6 +827,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
             "unmatched": len(unmatched),
         },
     }
+    write_html(html_report, summary_rows, detail_rows, raw["counts"])
     raw_json.write_text(json.dumps(raw, indent=2), encoding="utf-8")
     return AuditResult(
         stamp=stamp,
