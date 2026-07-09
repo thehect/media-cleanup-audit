@@ -10,6 +10,9 @@ services:
       - ${MEDIA_ROOT:-/mnt/media}:/data:ro
     ports:
       - "${MEDIACLEANUP_PORT:-6996}:6996"
+    networks:
+      - default
+      - media_stack
     environment:
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
       RADARR_API_KEY: ${RADARR_API_KEY:-}
@@ -17,3 +20,8 @@ services:
       QBIT_USER: ${QBIT_USER:-}
       QBIT_PASS: ${QBIT_PASS:-}
     command: ["--serve", "--config", "/app/config.yml", "--output-dir", "/reports", "--port", "6996"]
+
+networks:
+  media_stack:
+    external: true
+    name: ${MEDIA_NETWORK:-proxy_network}

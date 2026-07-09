@@ -9,6 +9,9 @@ services:
       - /your/nas/mount:/data:ro
     ports:
       - "6996:6996"
+    networks:
+      - default
+      - media_stack
     environment:
       JELLYFIN_API_KEY: change-me
       RADARR_API_KEY: change-me
@@ -16,3 +19,8 @@ services:
       QBIT_USER: admin
       QBIT_PASS: change-me
     command: ["--serve", "--config", "/app/config.yml", "--output-dir", "/reports", "--port", "6996"]
+
+networks:
+  media_stack:
+    external: true
+    name: proxy_network
