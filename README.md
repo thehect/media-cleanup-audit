@@ -213,3 +213,29 @@ docker exec mediacleanup getent hosts qbittorrent
 ```
 
 If those names do not match your actual container/service names, update `config.yml` to use the names shown by `docker ps --format '{{.Names}}'`.
+
+### qBittorrent login failed
+
+If qBittorrent is reachable but login fails, verify the credentials inside the running container:
+
+```bash
+docker exec mediacleanup printenv QBIT_USER
+docker exec mediacleanup printenv QBIT_PASS
+```
+
+If either value is blank or truncated, check `.env` in the `media-cleanup-audit` folder. Passwords with special characters can be easier to place directly in `config.yml`:
+
+```yaml
+qbittorrent:
+  enabled: true
+  url: http://qbittorrentvpn-audio:8080
+  username: admin
+  password: your-password-here
+```
+
+To keep testing the rest of the audit while sorting qBittorrent auth, temporarily set:
+
+```yaml
+qbittorrent:
+  enabled: false
+```

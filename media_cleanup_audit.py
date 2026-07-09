@@ -392,7 +392,10 @@ def fetch_qbit_paths(config: dict[str, Any]) -> set[str]:
         label="qBittorrent login",
     )
     if login_text.strip().lower() not in {"ok.", "ok"}:
-        raise RuntimeError("qBittorrent login failed")
+        raise RuntimeError(
+            "qBittorrent login failed. Check qbittorrent.username/qbittorrent.password in config.yml "
+            f"and QBIT_USER/QBIT_PASS in .env. qBittorrent returned: {login_text[:200]!r}"
+        )
     with opener.open(f"{url}/api/v2/torrents/info", timeout=60) as response:
         torrents = json.loads(response.read().decode("utf-8"))
     paths: set[str] = set()
