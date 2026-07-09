@@ -28,6 +28,16 @@ A larger file is only marked `safe_cleanup_candidate` when:
 
 Everything else becomes `review`.
 
+## Unmatched Files
+
+Unmatched files are videos found on disk that were not confirmed by Sonarr, Radarr, or Jellyfin. The report now includes an `Unmatched Breakdown` section that groups them by location and guessed type.
+
+- `movies`, `tv`, or `anime`: likely orphan/zombie candidates inside a library root. Review these first.
+- `downloads`: possibly active, incomplete, still seeding, or not imported yet. Treat these more carefully.
+- `other`: scanned video files outside the configured media/download roots.
+
+Filename parsing is only a review hint. Unmatched files are never marked `safe_cleanup_candidate` automatically.
+
 ## Quick Start
 
 1. Clone this repo onto your media server.

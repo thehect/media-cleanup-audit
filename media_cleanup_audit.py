@@ -800,15 +800,19 @@ def make_detail_row(
     }
 
 
-def unmatched_rows(unmatched: list[VideoFile]) -> list[dict[str, Any]]:
+def unmatched_rows(config: dict[str, Any], unmatched: list[VideoFile]) -> list[dict[str, Any]]:
     rows = []
     for vf in unmatched:
+        classification = classify_unmatched(config, vf)
         rows.append(
             {
                 "kind": "unmatched",
                 "title": guess_title(vf.path),
                 "item_id": "",
                 "path": vf.path,
+                "location": classification["location"],
+                "possible_type": classification["possible_type"],
+                "parsed_id": classification["parsed_id"],
                 "size": vf.size,
                 "size_human": human_size(vf.size),
                 "keeper": "",
@@ -818,10 +822,79 @@ def unmatched_rows(unmatched: list[VideoFile]) -> list[dict[str, Any]]:
                 "protected_by_qbit": vf.protected_by_qbit,
                 "jellyfin_visible": vf.jellyfin_visible,
                 "recommendation": "review",
-                "reason": "not confirmed by Sonarr/Radarr/Jellyfin; filename guess only",
+                "reason": classification["reason"],
             }
         )
     return rows
+
+
+def classify_unmatched(config: dict[str, Any], vf: VideoFile) -> dict[str, str]:
+    media_roots = config.get("media_roots", {})
+    path = vf.path
+    location = "other"
+    reason = "not confirmed by Sonarr/Radarr/Jellyfin; filename guess only"
+    for name, root in {
+        "movies": media_roots.get("movies", ""),
+        "tv": media_roots.get("tv", ""),
+        "downloads": media_roots.get("downloads", ""),
+    }.items():
+        if root and is_under(path, root):
+            location = name
+            break
+    if "/data/anime" in normalize_path(path):
+        location = "anime"
+    if location in {"movies", "tv", "anime"}:
+        reason = "unmatched inside library root; likely orphan/zombie candidate, review before cleanup"
+    elif location == "downloads":
+        reason = "unmatched inside downloads; may be active, incomplete, seeding, or not imported"
+
+    parsed = parse_media_identity(path)
+    return {
+        "location": location,
+        "possible_type": parsed["possible_type"],
+        "parsed_id": parsed["parsed_id"],
+        "reason": reason,
+    }
+
+
+def parse_media_identity(path: str) -> dict[str, str]:
+    name = Path(path).stem
+    tv_match = re.search(r"\bS(?P<season>\d{1,2})E(?P<episode>\d{1,3})\b", name, flags=re.I)
+    if not tv_match:
+        tv_match = re.search(r"\b(?P<season>\d{1,2})x(?P<episode>\d{1,3})\b", name, flags=re.I)
+    if tv_match:
+        title = guess_title(name[: tv_match.start()])
+        parsed_id = f"{title} S{int(tv_match.group('season')):02d}E{int(tv_match.group('episode')):02d}".strip()
+        return {"possible_type": "episode", "parsed_id": parsed_id}
+    movie_match = re.search(r"\b(19\d{2}|20\d{2})\b", name)
+    if movie_match:
+        title = guess_title(name[: movie_match.start()])
+        return {"possible_type": "movie", "parsed_id": f"{title} ({movie_match.group(1)})".strip()}
+    return {"possible_type": "unknown", "parsed_id": guess_title(path)}
+
+
+def unmatched_breakdown_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row.get("location", "other")), str(row.get("possible_type", "unknown")))
+        bucket = buckets.setdefault(
+            key,
+            {
+                "location": key[0],
+                "possible_type": key[1],
+                "file_count": 0,
+                "total_bytes": 0,
+                "total_size": "0 B",
+            },
+        )
+        bucket["file_count"] += 1
+        try:
+            bucket["total_bytes"] += int(row.get("size", 0) or 0)
+        except ValueError:
+            pass
+    for bucket in buckets.values():
+        bucket["total_size"] = human_size(int(bucket["total_bytes"]))
+    return sorted(buckets.values(), key=lambda row: (str(row["location"]), str(row["possible_type"])))
 
 
 def scan_error_rows(errors: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -867,7 +940,7 @@ def human_size(size: int) -> str:
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if rows:
-        fields = list(rows[0].keys())
+        fields = row_fields(rows)
     else:
         fields = ["status"]
         rows = [{"status": "no rows"}]
@@ -881,11 +954,13 @@ def write_html(
     path: Path,
     summary_rows: list[dict[str, Any]],
     detail_rows: list[dict[str, Any]],
+    unmatched_breakdown: list[dict[str, Any]] | None = None,
     diagnostic_rows: list[dict[str, Any]] | None = None,
     counts: dict[str, int] | None = None,
 ) -> None:
     safe_bytes = sum(int(row.get("reclaimable_bytes", 0) or 0) for row in summary_rows)
     counts = counts or {}
+    unmatched_breakdown = unmatched_breakdown or []
     diagnostic_rows = diagnostic_rows or []
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'>",
@@ -904,6 +979,8 @@ def write_html(
             "summary_rows": len(summary_rows),
             "detail_rows": len(detail_rows),
         }]),
+        "<h2>Unmatched Breakdown</h2>",
+        table_html(unmatched_breakdown),
         "<h2>Summary</h2>",
         table_html(summary_rows),
         "<h2>Details</h2>",
@@ -929,7 +1006,9 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
     files = annotate_files(scan_result.files, jellyfin_paths, qbit_paths)
     groups, unmatched = build_groups(config, files, radarr, sonarr)
     summary_rows, detail_rows = classify_groups(config, groups)
-    detail_rows.extend(unmatched_rows(unmatched))
+    unmatched_detail_rows = unmatched_rows(config, unmatched)
+    unmatched_breakdown = unmatched_breakdown_rows(unmatched_detail_rows)
+    detail_rows.extend(unmatched_detail_rows)
     detail_rows.extend(scan_error_rows(scan_result.errors))
     diagnostics = diagnostic_rows(config, files, radarr, sonarr, jellyfin_raw_paths, jellyfin_paths, qbit_paths)
 
@@ -944,6 +1023,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
         "generated_at": datetime.now().isoformat(),
         "summary": summary_rows,
         "details": detail_rows,
+        "unmatched_breakdown": unmatched_breakdown,
         "diagnostics": diagnostics,
         "counts": {
             "files_scanned": len(files),
@@ -952,7 +1032,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
             "scan_errors": len(scan_result.errors),
         },
     }
-    write_html(html_report, summary_rows, detail_rows, diagnostics, raw["counts"])
+    write_html(html_report, summary_rows, detail_rows, unmatched_breakdown, diagnostics, raw["counts"])
     raw_json.write_text(json.dumps(raw, indent=2), encoding="utf-8")
     return AuditResult(
         stamp=stamp,
@@ -973,7 +1053,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
 def table_html(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "<p>No rows.</p>"
-    fields = list(rows[0].keys())
+    fields = row_fields(rows)
     out = ["<table><thead><tr>"]
     out.extend(f"<th>{html.escape(field)}</th>" for field in fields)
     out.append("</tr></thead><tbody>")
@@ -985,6 +1065,17 @@ def table_html(rows: list[dict[str, Any]]) -> str:
         out.append("</tr>")
     out.append("</tbody></table>")
     return "\n".join(out)
+
+
+def row_fields(rows: list[dict[str, Any]]) -> list[str]:
+    fields = []
+    seen = set()
+    for row in rows:
+        for field in row.keys():
+            if field not in seen:
+                fields.append(field)
+                seen.add(field)
+    return fields
 
 
 def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: int) -> None:

@@ -8,11 +8,14 @@ from media_cleanup_audit import (
     VideoFile,
     classify_groups,
     canonicalize_path,
+    classify_unmatched,
     gather_episode_candidates,
+    parse_media_identity,
     render_dashboard,
     render_status,
     resolve_media_file_path,
     scan_error_rows,
+    unmatched_breakdown_rows,
     validate_config,
     fetch_jellyfin_user_id,
     fetch_sonarr,
@@ -168,6 +171,33 @@ class MediaCleanupAuditTests(unittest.TestCase):
         self.assertEqual(rows[0]["kind"], "inaccessible")
         self.assertEqual(rows[0]["recommendation"], "review")
         self.assertIn("permission denied", rows[0]["reason"])
+
+    def test_unmatched_library_file_is_zombie_candidate(self):
+        config = {"media_roots": {"movies": "/data/movies", "tv": "/data/tvshows", "downloads": "/data/downloads"}}
+        item = vf("/data/movies/Arrival (2016)/Arrival.2016.1080p.mkv", 100, 1)
+        classification = classify_unmatched(config, item)
+        self.assertEqual(classification["location"], "movies")
+        self.assertEqual(classification["possible_type"], "movie")
+        self.assertIn("orphan/zombie", classification["reason"])
+
+    def test_parse_media_identity_for_episode_and_movie(self):
+        self.assertEqual(
+            parse_media_identity("/data/downloads/Show.Name.S02E03.720p.mkv")["parsed_id"],
+            "Show Name S02E03",
+        )
+        self.assertEqual(
+            parse_media_identity("/data/downloads/Arrival.2016.1080p.mkv")["parsed_id"],
+            "Arrival (2016)",
+        )
+
+    def test_unmatched_breakdown_totals_by_location_and_type(self):
+        rows = [
+            {"location": "downloads", "possible_type": "episode", "size": 100},
+            {"location": "downloads", "possible_type": "episode", "size": 300},
+        ]
+        breakdown = unmatched_breakdown_rows(rows)
+        self.assertEqual(breakdown[0]["file_count"], 2)
+        self.assertEqual(breakdown[0]["total_bytes"], 400)
 
 
 if __name__ == "__main__":
