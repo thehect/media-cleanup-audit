@@ -10,7 +10,9 @@ from media_cleanup_audit import (
     canonicalize_path,
     classify_unmatched,
     delete_quarantined,
+    download_cleanup_rows,
     gather_episode_candidates,
+    library_health_cards,
     parse_media_identity,
     render_dashboard,
     render_status,
@@ -226,6 +228,27 @@ class MediaCleanupAuditTests(unittest.TestCase):
         result = delete_quarantined(state, ["anything"], "delete")
         self.assertEqual(result["deleted"], [])
         self.assertIn("DELETE", result["errors"][0]["error"])
+
+    def test_download_cleanup_marks_imported_leftovers_high_confidence(self):
+        rows = download_cleanup_rows(
+            [
+                {
+                    "path": "/data/downloads/Show.Name.S02E03.mkv",
+                    "parsed_id": "Show Name S02E03",
+                    "possible_type": "episode",
+                    "size": 100,
+                    "age_days": 20,
+                }
+            ],
+            [{"title": "Show Name S02E03"}],
+        )
+        self.assertEqual(rows[0]["confidence"], "High")
+        self.assertEqual(rows[0]["bucket"], "Likely imported leftover")
+
+    def test_library_health_flags_large_downloads(self):
+        cards = library_health_cards([{"location": "downloads", "file_count": 3314, "total_size": "7.1 TB"}])
+        downloads = [card for card in cards if card["location"] == "downloads"][0]
+        self.assertTrue(downloads["attention"])
 
 
 if __name__ == "__main__":

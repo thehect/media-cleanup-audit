@@ -46,6 +46,19 @@ Unmatched files are videos found on disk that were not confirmed by Sonarr, Rada
 
 Filename parsing is only a review hint. Unmatched files are never marked `safe_cleanup_candidate` automatically.
 
+## Downloads Cleanup
+
+The dashboard treats Downloads as its own cleanup lane because a healthy imported library can still leave a large downloads folder behind.
+
+Downloads are grouped into review buckets:
+
+- `Likely imported leftover`: parsed download appears to match an item already known to the library.
+- `Old episode download` or `Old movie download`: recognizable media file older than 14 days.
+- `Likely episode` or `Likely movie`: recognizable media that still needs review.
+- `Unmatched download`: video file that needs a human look.
+
+With qBittorrent disabled, the app cannot know whether a download is still seeding. Keep using quarantine first, then permanently delete only after verification.
+
 ## Quick Start
 
 1. Clone this repo onto your media server.

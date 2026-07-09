@@ -56,6 +56,7 @@ class VideoFile:
     inode: int | None
     nlink: int | None
     source_root: str
+    modified_at: float = 0
     protected_by_qbit: bool = False
     jellyfin_visible: bool = False
     radarr_movie_id: int | None = None
@@ -492,6 +493,7 @@ def scan_video_files(config: dict[str, Any]) -> ScanResult:
                     inode=getattr(stat, "st_ino", None),
                     nlink=getattr(stat, "st_nlink", None),
                     source_root=root,
+                    modified_at=getattr(stat, "st_mtime", 0),
                 )
             )
     return ScanResult(files=found, errors=errors)
@@ -816,6 +818,9 @@ def unmatched_rows(config: dict[str, Any], unmatched: list[VideoFile]) -> list[d
                 "parsed_id": classification["parsed_id"],
                 "size": vf.size,
                 "size_human": human_size(vf.size),
+                "modified": format_timestamp(vf.modified_at),
+                "age_days": age_days(vf.modified_at),
+                "folder": str(Path(vf.path).parent),
                 "keeper": "",
                 "keeper_size": "",
                 "keeper_size_human": "",
@@ -958,6 +963,19 @@ def guess_title(path: str) -> str:
     name = re.sub(r"[._]+", " ", name)
     name = re.sub(r"\b(720p|1080p|2160p|x264|x265|h264|h265|bluray|web-dl|webrip|hdrip)\b", "", name, flags=re.I)
     return re.sub(r"\s+", " ", name).strip()
+
+
+def format_timestamp(value: float) -> str:
+    if not value:
+        return ""
+    return datetime.fromtimestamp(value).isoformat(timespec="seconds")
+
+
+def age_days(value: float) -> int | str:
+    if not value:
+        return ""
+    delta = datetime.now() - datetime.fromtimestamp(value)
+    return max(0, int(delta.total_seconds() // 86400))
 
 
 def human_size(size: int) -> str:
@@ -1140,12 +1158,19 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
         if row.get("kind") in {"unmatched", "inaccessible"}
         and row.get("location") in {"movies", "tv", "anime"}
     ]
+    download_rows = [
+        row for row in details
+        if row.get("kind") == "unmatched" and row.get("location") == "downloads"
+    ]
     config = load_config(state.config_path)
     quarantined = quarantine_inventory(config)
     return {
         "status": render_status(state),
         "latest": latest,
         "scan_breakdown": raw.get("scan_breakdown", []) if raw else [],
+        "library_health": library_health_cards(raw.get("scan_breakdown", []) if raw else []),
+        "download_candidates": download_cleanup_rows(download_rows, raw.get("summary", []) if raw else []),
+        "download_summary": download_cleanup_summary(download_rows, raw.get("summary", []) if raw else []),
         "duplicate_candidates": dashboard_candidate_rows(duplicate_rows),
         "safe_candidates": dashboard_candidate_rows(safe_rows),
         "quarantined": quarantined,
@@ -1171,6 +1196,98 @@ def dashboard_candidate_rows(rows: list[dict[str, Any]], limit: int = 250) -> li
             }
         )
     return candidates
+
+
+def library_health_cards(scan_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order = ["movies", "tv", "anime", "downloads"]
+    by_location = {str(row.get("location", "")): row for row in scan_rows}
+    cards = []
+    for location in order:
+        row = by_location.get(location, {})
+        cards.append(
+            {
+                "location": location,
+                "label": {"tv": "TV"}.get(location, location.title()),
+                "file_count": int(row.get("file_count", 0) or 0),
+                "total_size": row.get("total_size", "0 B"),
+                "root": row.get("root", ""),
+                "attention": location == "downloads" and int(row.get("file_count", 0) or 0) > 250,
+            }
+        )
+    return cards
+
+
+def download_cleanup_summary(download_rows: list[dict[str, Any]], summary_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = download_cleanup_rows(download_rows, summary_rows, limit=1000000)
+    total = sum(int(row.get("size", 0) or 0) for row in rows)
+    high = sum(1 for row in rows if row.get("confidence") == "High")
+    review = sum(1 for row in rows if row.get("confidence") != "High")
+    old = sum(1 for row in rows if isinstance(row.get("age_days"), int) and row["age_days"] >= 14)
+    return {
+        "items": len(rows),
+        "total_size": human_size(total),
+        "high_confidence": high,
+        "review": review,
+        "older_than_14_days": old,
+    }
+
+
+def download_cleanup_rows(
+    download_rows: list[dict[str, Any]],
+    summary_rows: list[dict[str, Any]],
+    limit: int = 300,
+) -> list[dict[str, Any]]:
+    library_keys = {identity_key(str(row.get("title", ""))) for row in summary_rows if row.get("title")}
+    candidates = []
+    for row in download_rows:
+        parsed = str(row.get("parsed_id") or row.get("title") or row.get("path") or "")
+        possible_type = str(row.get("possible_type") or "unknown")
+        key = identity_key(parsed)
+        confidence = "Review"
+        bucket = "Unmatched download"
+        if possible_type in {"episode", "movie"}:
+            bucket = f"Likely {possible_type}"
+        if key and any(key.startswith(lib_key) or lib_key.startswith(key) for lib_key in library_keys if lib_key):
+            confidence = "High"
+            bucket = "Likely imported leftover"
+        age = row.get("age_days", "")
+        if confidence != "High" and isinstance(age, int) and age >= 14 and possible_type in {"episode", "movie"}:
+            confidence = "Medium"
+            bucket = f"Old {possible_type} download"
+        candidates.append(
+            {
+                "path": row.get("path", ""),
+                "title": parsed,
+                "size": int(row.get("size", 0) or 0),
+                "size_human": row.get("size_human", ""),
+                "folder": row.get("folder", ""),
+                "modified": row.get("modified", ""),
+                "age_days": age,
+                "possible_type": possible_type,
+                "bucket": bucket,
+                "match": bucket,
+                "confidence": confidence,
+                "reason": row.get("reason", ""),
+            }
+        )
+    confidence_order = {"High": 0, "Medium": 1, "Review": 2}
+    return sorted(
+        candidates,
+        key=lambda row: (
+            confidence_order.get(str(row.get("confidence")), 9),
+            -(row.get("age_days") if isinstance(row.get("age_days"), int) else -1),
+            -int(row.get("size", 0) or 0),
+        ),
+    )[:limit]
+
+
+def identity_key(text: str) -> str:
+    value = text.lower()
+    value = re.sub(r"\([^)]*\)", " ", value)
+    value = re.sub(r"\bs\d{1,2}e\d{1,3}\b", " ", value)
+    value = re.sub(r"\b(19\d{2}|20\d{2})\b", " ", value)
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def report_names(raw: dict[str, Any] | None, state: DashboardState) -> dict[str, str]:
@@ -1524,6 +1641,7 @@ def render_dashboard(state: DashboardState) -> str:
     .card-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 12px; }}
     .stats {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }}
     .stat {{ border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfcfe; min-height: 76px; }}
+    .stat.attention {{ border-color: #f79009; background: #fffbeb; }}
     .label {{ color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 900; letter-spacing: .04em; }}
     .value {{ margin-top: 6px; font-size: 22px; font-weight: 900; overflow-wrap: anywhere; }}
     .green {{ color: var(--green); }} .amber {{ color: var(--amber); }} .red {{ color: var(--red); }}
@@ -1532,6 +1650,8 @@ def render_dashboard(state: DashboardState) -> str:
     .item-title {{ font-weight: 850; overflow-wrap: anywhere; }}
     .path {{ color: var(--muted); font-size: 12px; overflow-wrap: anywhere; margin-top: 4px; }}
     .pill {{ display: inline-flex; border-radius: 999px; background: var(--soft); color: var(--blue); font-size: 12px; font-weight: 850; padding: 3px 8px; margin-right: 6px; margin-top: 8px; }}
+    .pill.high {{ background: #ecfdf3; color: var(--green); }}
+    .pill.medium {{ background: #fffaeb; color: var(--amber); }}
     .notice {{ padding: 12px 14px; border-radius: 8px; background: #fff7ed; border: 1px solid #fed7aa; color: #7c2d12; }}
     .error {{ background: #fef3f2; border-color: #fecdca; color: var(--red); }}
     .dot {{ width: 10px; height: 10px; border-radius: 999px; background: var(--green); display: inline-block; margin-right: 8px; }}
@@ -1553,8 +1673,22 @@ def render_dashboard(state: DashboardState) -> str:
       </div>
     </header>
     <div id="message"></div>
-    <section class="stats" id="stats"></section>
+    <section class="stats" id="libraryHealth"></section>
     <section class="layout" style="margin-top:14px;">
+      <div class="card wide">
+        <div class="card-head">
+          <div>
+            <h2>Downloads Cleanup</h2>
+            <div class="sub" id="downloadSummary">Waiting for audit.</div>
+          </div>
+          <span class="meta">largest cleanup target</span>
+        </div>
+        <div class="actions">
+          <button onclick="reviewCard('downloads')">Review</button>
+          <button class="primary" onclick="quarantineSelected('download')">Quarantine Selected</button>
+        </div>
+        <div class="list" id="downloads" style="margin-top:12px;"></div>
+      </div>
       <div class="card">
         <div class="card-head"><h2>Scanned</h2><span class="meta" id="scanTotal"></span></div>
         <div id="scanned"></div>
@@ -1616,7 +1750,9 @@ def render_dashboard(state: DashboardState) -> str:
       document.getElementById('timeText').textContent = status.last_finished ? `Last finished ${{status.last_finished}}` : (status.last_started ? `Started ${{status.last_started}}` : 'No audit has run yet');
       document.getElementById('message').innerHTML = status.last_error ? `<div class="notice error">${{escapeHtml(status.last_error)}}</div>` : '';
       renderStats(data.latest);
+      renderLibraryHealth(data.library_health || []);
       renderScanned(data.scan_breakdown || []);
+      renderDownloads(data.download_candidates || [], data.download_summary || {{}});
       renderCandidates('duplicates', 'duplicateSummary', data.duplicate_candidates || [], 'duplicate');
       renderCandidates('safe', 'safeSummary', data.safe_candidates || [], 'safe');
       renderQuarantine(data.quarantined || {{ rows: [], empty: true, items: 0, recoverable_size: '0 B' }});
@@ -1624,11 +1760,18 @@ def render_dashboard(state: DashboardState) -> str:
     }}
     function renderStats(x) {{
       x = x || {{ files_scanned: 0, groups_count: 0, safe_count: 0, review_count: 0, reclaimable: '0 B' }};
-      document.getElementById('stats').innerHTML = `
-        <div class="stat"><div class="label">Scanned</div><div class="value">${{x.files_scanned}}</div></div>
-        <div class="stat"><div class="label">Duplicate Candidates</div><div class="value green">${{x.safe_count}}</div></div>
-        <div class="stat"><div class="label">Needs Review</div><div class="value amber">${{x.review_count}}</div></div>
-        <div class="stat"><div class="label">Recoverable</div><div class="value green">${{escapeHtml(x.reclaimable || '0 B')}}</div></div>`;
+      window.latestStats = x;
+    }}
+    function renderLibraryHealth(rows) {{
+      const stats = window.latestStats || {{ safe_count: 0, review_count: 0, reclaimable: '0 B' }};
+      const health = rows.length ? rows.map(row => `
+        <div class="stat ${{row.attention ? 'attention' : ''}}">
+          <div class="label">${{escapeHtml(row.label)}}</div>
+          <div class="value">${{row.file_count}}</div>
+          <div class="sub">${{escapeHtml(row.total_size || '0 B')}}</div>
+        </div>`).join('') : '';
+      document.getElementById('libraryHealth').innerHTML = health + `
+        <div class="stat"><div class="label">Candidates</div><div class="value green">${{stats.safe_count || 0}}</div><div class="sub">${{escapeHtml(stats.reclaimable || '0 B')}}</div></div>`;
     }}
     function renderScanned(rows) {{
       const total = rows.reduce((sum, row) => sum + Number(row.file_count || 0), 0);
@@ -1652,6 +1795,22 @@ def render_dashboard(state: DashboardState) -> str:
             <span class="pill">Confidence: ${{escapeHtml(row.confidence || 'Review')}}</span>
           </div>
         </label>`).join('') : `<div class="notice">No rows.</div>`;
+    }}
+    function renderDownloads(rows, summary) {{
+      document.getElementById('downloadSummary').textContent =
+        `${{summary.items || 0}} items | ${{summary.total_size || '0 B'}} | high confidence: ${{summary.high_confidence || 0}} | older than 14 days: ${{summary.older_than_14_days || 0}}`;
+      document.getElementById('downloads').innerHTML = rows.length ? rows.map(row => `
+        <label class="item">
+          <input type="checkbox" data-kind="download" value="${{escapeAttr(row.path)}}">
+          <div>
+            <div class="item-title">${{escapeHtml(row.title || row.path)}}</div>
+            <div class="path">${{escapeHtml(row.folder || row.path)}}</div>
+            <span class="pill ${{String(row.confidence).toLowerCase()}}">Confidence: ${{escapeHtml(row.confidence || 'Review')}}</span>
+            <span class="pill">Bucket: ${{escapeHtml(row.bucket || 'download')}}</span>
+            <span class="pill">Size: ${{escapeHtml(row.size_human || 'unknown')}}</span>
+            <span class="pill">Age: ${{row.age_days === '' ? 'unknown' : `${{row.age_days}} days`}}</span>
+          </div>
+        </label>`).join('') : `<div class="notice">No download cleanup rows yet. Run Audit to refresh.</div>`;
     }}
     function renderQuarantine(q) {{
       document.getElementById('quarantineSummary').textContent = `Empty? ${{q.empty ? 'Yes' : 'No'}} | Items: ${{q.items || 0}} | Recoverable size: ${{q.recoverable_size || '0 B'}}`;
