@@ -158,3 +158,44 @@ Each run creates:
 - Hardlinks are detected using filesystem device/inode information. This works best when the tool runs on the same server/container mount view as your media stack.
 - qBittorrent paths are protected when they match, contain, or are contained by a configured scanned video path.
 - Paths are normalized for comparison but reported as originally discovered.
+
+## Troubleshooting
+
+### Temporary failure in name resolution
+
+If the dashboard shows:
+
+```text
+Temporary failure in name resolution
+```
+
+the `mediacleanup` container cannot resolve a service name from `config.yml`, such as `jellyfin`, `radarr`, `sonarr`, or `qbittorrent`.
+
+Find your media stack network:
+
+```bash
+docker network ls
+```
+
+Inspect likely networks:
+
+```bash
+docker network inspect YOUR_MEDIA_NETWORK --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}'
+```
+
+Connect Media Cleanup to that network:
+
+```bash
+docker network connect YOUR_MEDIA_NETWORK mediacleanup
+```
+
+Then test DNS from inside the container:
+
+```bash
+docker exec mediacleanup getent hosts jellyfin
+docker exec mediacleanup getent hosts radarr
+docker exec mediacleanup getent hosts sonarr
+docker exec mediacleanup getent hosts qbittorrent
+```
+
+If those names do not match your actual container/service names, update `config.yml` to use the names shown by `docker ps --format '{{.Names}}'`.

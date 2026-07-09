@@ -12,6 +12,7 @@ import json
 import os
 import posixpath
 import re
+import socket
 import sys
 import threading
 import urllib.error
@@ -246,6 +247,8 @@ def api_get(
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"{label} failed: HTTP {exc.code} {exc.reason} at {url}. {body[:500]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{label} failed: could not reach {url}. {describe_url_error(exc)}") from exc
 
 
 def api_post_form(
@@ -263,6 +266,20 @@ def api_post_form(
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"{label} failed: HTTP {exc.code} {exc.reason} at {url}. {body[:500]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{label} failed: could not reach {url}. {describe_url_error(exc)}") from exc
+
+
+def describe_url_error(exc: urllib.error.URLError) -> str:
+    reason = exc.reason
+    if isinstance(reason, socket.gaierror):
+        return (
+            f"DNS/name lookup failed for the host. This usually means the mediacleanup container is not on the "
+            f"same Docker network as the media app, or config.yml uses the wrong service/container name. Details: {reason}"
+        )
+    if isinstance(reason, TimeoutError):
+        return "Connection timed out. Check the service URL, port, and Docker network."
+    return str(reason)
 
 
 def fetch_radarr(config: dict[str, Any]) -> dict[str, Any]:
