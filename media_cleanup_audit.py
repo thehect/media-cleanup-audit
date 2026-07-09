@@ -246,6 +246,8 @@ def api_get(
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 401:
+            raise RuntimeError(f"{label} failed: HTTP 401 Unauthorized at {url}. Check the API key in config.yml.") from exc
         raise RuntimeError(f"{label} failed: HTTP {exc.code} {exc.reason} at {url}. {body[:500]}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"{label} failed: could not reach {url}. {describe_url_error(exc)}") from exc
@@ -265,6 +267,8 @@ def api_post_form(
             return response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 401:
+            raise RuntimeError(f"{label} failed: HTTP 401 Unauthorized at {url}. Check the username/password or API key in config.yml.") from exc
         raise RuntimeError(f"{label} failed: HTTP {exc.code} {exc.reason} at {url}. {body[:500]}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"{label} failed: could not reach {url}. {describe_url_error(exc)}") from exc
