@@ -93,6 +93,12 @@ class AuditResult:
     raw_json: Path
 
 
+@dataclasses.dataclass(frozen=True)
+class ScanResult:
+    files: list[VideoFile]
+    errors: list[dict[str, str]]
+
+
 @dataclasses.dataclass
 class DashboardState:
     config_path: str
@@ -437,7 +443,7 @@ def fetch_qbit_paths(config: dict[str, Any]) -> set[str]:
     return paths
 
 
-def scan_video_files(config: dict[str, Any]) -> list[VideoFile]:
+def scan_video_files(config: dict[str, Any]) -> ScanResult:
     scan = config.get("scan", {})
     roots = scan.get("roots") or [
         config.get("media_roots", {}).get("movies"),
@@ -448,14 +454,19 @@ def scan_video_files(config: dict[str, Any]) -> list[VideoFile]:
     extensions = {str(ext).lower() for ext in scan.get("video_extensions", DEFAULT_VIDEO_EXTENSIONS)}
     ignored = [str(keyword).lower() for keyword in scan.get("ignore_path_keywords", [])]
     found: list[VideoFile] = []
+    errors: list[dict[str, str]] = []
     log("Scanning configured roots for video files...")
     for root in roots:
         root_path = Path(root)
         if not root_path.exists():
             log(f"Warning: scan root does not exist: {root}")
             continue
-        for path in root_path.rglob("*"):
-            if not path.is_file():
+        for path in safe_rglob(root_path, errors):
+            try:
+                if not path.is_file():
+                    continue
+            except OSError as exc:
+                errors.append({"path": path.as_posix(), "reason": f"cannot inspect path: {exc}"})
                 continue
             if path.suffix.lower() not in extensions:
                 continue
@@ -463,7 +474,11 @@ def scan_video_files(config: dict[str, Any]) -> list[VideoFile]:
             lowered = path_text.lower()
             if any(keyword in lowered for keyword in ignored):
                 continue
-            stat = path.stat()
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                errors.append({"path": path_text, "reason": f"cannot stat video file: {exc}"})
+                continue
             found.append(
                 VideoFile(
                     path=path_text,
@@ -475,6 +490,17 @@ def scan_video_files(config: dict[str, Any]) -> list[VideoFile]:
                     source_root=root,
                 )
             )
+    return ScanResult(files=found, errors=errors)
+
+
+def safe_rglob(root: Path, errors: list[dict[str, str]]) -> list[Path]:
+    found: list[Path] = []
+    try:
+        iterator = root.rglob("*")
+        for path in iterator:
+            found.append(path)
+    except OSError as exc:
+        errors.append({"path": root.as_posix(), "reason": f"cannot scan directory: {exc}"})
     return found
 
 
@@ -761,6 +787,31 @@ def unmatched_rows(unmatched: list[VideoFile]) -> list[dict[str, Any]]:
     return rows
 
 
+def scan_error_rows(errors: list[dict[str, str]]) -> list[dict[str, Any]]:
+    rows = []
+    for error in errors:
+        path = error.get("path", "")
+        rows.append(
+            {
+                "kind": "inaccessible",
+                "title": guess_title(path),
+                "item_id": "",
+                "path": path,
+                "size": "",
+                "size_human": "",
+                "keeper": "",
+                "keeper_size": "",
+                "keeper_size_human": "",
+                "hardlink_key": "",
+                "protected_by_qbit": "",
+                "jellyfin_visible": "",
+                "recommendation": "review",
+                "reason": error.get("reason", "cannot inspect file"),
+            }
+        )
+    return rows
+
+
 def guess_title(path: str) -> str:
     name = Path(path).stem
     name = re.sub(r"[._]+", " ", name)
@@ -810,6 +861,7 @@ def write_html(
             "files_scanned": counts.get("files_scanned", 0),
             "matched_groups": counts.get("groups", 0),
             "unmatched_files": counts.get("unmatched", 0),
+            "scan_errors": counts.get("scan_errors", 0),
             "summary_rows": len(summary_rows),
             "detail_rows": len(detail_rows),
         }]),
@@ -832,10 +884,12 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
     sonarr = fetch_sonarr(config)
     jellyfin_paths = fetch_jellyfin_paths(config)
     qbit_paths = fetch_qbit_paths(config)
-    files = annotate_files(scan_video_files(config), jellyfin_paths, qbit_paths)
+    scan_result = scan_video_files(config)
+    files = annotate_files(scan_result.files, jellyfin_paths, qbit_paths)
     groups, unmatched = build_groups(config, files, radarr, sonarr)
     summary_rows, detail_rows = classify_groups(config, groups)
     detail_rows.extend(unmatched_rows(unmatched))
+    detail_rows.extend(scan_error_rows(scan_result.errors))
 
     summary_csv = output_path / f"media-cleanup-summary-{stamp}.csv"
     details_csv = output_path / f"media-cleanup-details-{stamp}.csv"
@@ -852,6 +906,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
             "files_scanned": len(files),
             "groups": len(groups),
             "unmatched": len(unmatched),
+            "scan_errors": len(scan_result.errors),
         },
     }
     write_html(html_report, summary_rows, detail_rows, raw["counts"])

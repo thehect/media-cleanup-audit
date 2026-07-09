@@ -12,6 +12,7 @@ from media_cleanup_audit import (
     render_dashboard,
     render_status,
     resolve_media_file_path,
+    scan_error_rows,
     validate_config,
     fetch_jellyfin_user_id,
     fetch_sonarr,
@@ -160,6 +161,12 @@ class MediaCleanupAuditTests(unittest.TestCase):
             canonicalize_path(config, "/tvshows/Show/Season 01/Show.S01E01.mkv"),
             "/data/tvshows/show/season 01/show.s01e01.mkv",
         )
+
+    def test_scan_errors_become_review_rows(self):
+        rows = scan_error_rows([{"path": "/data/downloads/locked.mkv", "reason": "permission denied"}])
+        self.assertEqual(rows[0]["kind"], "inaccessible")
+        self.assertEqual(rows[0]["recommendation"], "review")
+        self.assertIn("permission denied", rows[0]["reason"])
 
 
 if __name__ == "__main__":
