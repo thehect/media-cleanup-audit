@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f8">
+  <title>Media Cleanup</title>
+  <link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">MC</span><span>Media Cleanup</span></div>
+      <nav class="side-nav" aria-label="Main navigation">
+        <button class="nav-button active" data-nav="overview" onclick="goTo('overview')"><span>Overview</span></button>
+        <button class="nav-button" data-nav="downloads" onclick="goTo('downloads')"><span>Downloads</span><span class="nav-count" id="navDownloads">0</span></button>
+        <button class="nav-button" data-nav="duplicates" onclick="goTo('duplicates')"><span>Duplicates</span><span class="nav-count" id="navDuplicates">0</span></button>
+        <button class="nav-button" data-nav="library" onclick="goTo('library')"><span>Library review</span><span class="nav-count" id="navLibrary">0</span></button>
+        <button class="nav-button" data-nav="quarantine" onclick="goTo('quarantine')"><span>Quarantine</span><span class="nav-count" id="navQuarantine">0</span></button>
+      </nav>
+      <div class="side-status">
+        <div class="status-line"><span id="sideDot" class="dot __BUSY_CLASS__"></span><span id="sideStatus">__STATUS_TEXT__</span></div>
+        <div id="sideTime">__TIME_TEXT__</div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="mobile-brand">Media Cleanup</div>
+        <div class="top-status"><span id="topStatus">__STATUS_TEXT__</span> <span aria-hidden="true">&middot;</span> <span id="topTime">__TIME_TEXT__</span></div>
+        <div class="top-actions"><button id="run" class="primary" onclick="runAudit()">Run audit</button></div>
+      </header>
+
+      <main class="content">
+        <section class="view active" id="view-overview">
+          <div class="page-heading">
+            <div><h1>Media overview</h1><div class="sub" id="overviewTimestamp">Waiting for the first audit.</div></div>
+          </div>
+
+          <div class="focus-panel">
+            <div>
+              <div class="eyebrow" id="focusEyebrow">Next best action</div>
+              <h2 id="focusTitle">Ready for your first audit</h2>
+              <p id="focusBody">Scan the media folders to build a cleanup review.</p>
+            </div>
+            <button class="primary focus-action" id="focusButton" onclick="runAudit()">Run audit</button>
+          </div>
+
+          <div class="safety-banner" id="qbitBanner">
+            <div><strong>Seeding check is off</strong><div>Download matches need a quick seeding check before quarantine.</div></div>
+            <button onclick="goTo('downloads')">Review downloads</button>
+          </div>
+
+          <div class="summary-grid" id="overviewCards"></div>
+
+          <section class="section">
+            <div class="section-head"><h2>Next actions</h2><span class="meta">Scan &rarr; Quarantine &rarr; Delete</span></div>
+            <div class="action-list" id="nextActions"></div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h2>Folders scanned</h2><span class="meta" id="scanTotal">0 files</span></div>
+            <div class="scan-list" id="scanned"></div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h2>Reports</h2><span class="meta">Latest audit files</span></div>
+            <div class="links report-links" id="links"></div>
+          </section>
+        </section>
+
+        <section class="view" id="view-downloads">
+          <div class="page-heading">
+            <div><h1>Downloads</h1><div class="sub">Library matches first, then older and larger files.</div></div>
+          </div>
+          <div class="queue-summary" id="downloadSummary"></div>
+          <div class="toolbar">
+            <div class="toolbar-left segmented" data-segments="download">
+              <button class="active" onclick="setFilter('download','all',this)">All</button>
+              <button onclick="setFilter('download','high',this)">Library match</button>
+              <button onclick="setFilter('download','old',this)">14+ days</button>
+              <button onclick="setFilter('download','review',this)">Needs review</button>
+            </div>
+            <div class="toolbar-right">
+              <input class="search" type="search" placeholder="Search downloads" aria-label="Search downloads" oninput="setSearch('download',this.value)">
+              <select aria-label="Sort downloads" onchange="setSort('download',this.value)">
+                <option value="recommended">Recommended</option>
+                <option value="largest">Largest</option>
+                <option value="oldest">Oldest</option>
+                <option value="name">Name</option>
+              </select>
+              <button onclick="selectVisible('download')">Select shown</button>
+            </div>
+          </div>
+          <div class="selection-bar" id="downloadSelection"></div>
+          <div class="queue" id="downloads"></div>
+        </section>
+
+        <section class="view" id="view-duplicates">
+          <div class="page-heading">
+            <div><h1>Duplicates</h1><div class="sub">Larger versions paired with the smaller library copy that stays.</div></div>
+          </div>
+          <div class="queue-summary" id="duplicateSummary"></div>
+          <div class="toolbar">
+            <div class="toolbar-left segmented" data-segments="duplicate">
+              <button class="active" onclick="setFilter('duplicate','all',this)">All</button>
+              <button onclick="setFilter('duplicate','movie',this)">Movies</button>
+              <button onclick="setFilter('duplicate','episode',this)">TV episodes</button>
+            </div>
+            <div class="toolbar-right">
+              <input class="search" type="search" placeholder="Search duplicates" aria-label="Search duplicates" oninput="setSearch('duplicate',this.value)">
+              <select aria-label="Sort duplicates" onchange="setSort('duplicate',this.value)"><option value="largest">Largest</option><option value="name">Name</option></select>
+              <button onclick="selectVisible('duplicate')">Select shown</button>
+            </div>
+          </div>
+          <div class="selection-bar" id="duplicateSelection"></div>
+          <div class="queue" id="duplicates"></div>
+        </section>
+
+        <section class="view" id="view-library">
+          <div class="page-heading">
+            <div><h1>Library review</h1><div class="sub">Video files in library folders that the media apps did not confirm.</div></div>
+          </div>
+          <div class="queue-summary" id="librarySummary"></div>
+          <div class="toolbar">
+            <div class="toolbar-left segmented" data-segments="library">
+              <button class="active" onclick="setFilter('library','all',this)">All</button>
+              <button onclick="setFilter('library','movies',this)">Movies</button>
+              <button onclick="setFilter('library','tv',this)">TV</button>
+              <button onclick="setFilter('library','anime',this)">Anime</button>
+            </div>
+            <div class="toolbar-right">
+              <input class="search" type="search" placeholder="Search library files" aria-label="Search library files" oninput="setSearch('library',this.value)">
+              <select aria-label="Sort library review" onchange="setSort('library',this.value)"><option value="largest">Largest</option><option value="name">Name</option></select>
+              <button onclick="selectVisible('library')">Select shown</button>
+            </div>
+          </div>
+          <div class="selection-bar" id="librarySelection"></div>
+          <div class="queue" id="libraryRows"></div>
+        </section>
+
+        <section class="view" id="view-quarantine">
+          <div class="page-heading">
+            <div><h1>Quarantine</h1><div class="sub">Recover files or permanently remove verified items.</div></div>
+          </div>
+          <div class="queue-summary" id="quarantineSummary"></div>
+          <div class="toolbar quarantine-toolbar">
+            <div></div>
+            <div class="toolbar-right">
+              <input class="search" type="search" placeholder="Search quarantine" aria-label="Search quarantine" oninput="setSearch('quarantine',this.value)">
+              <button onclick="selectVisible('quarantine')">Select shown</button>
+            </div>
+          </div>
+          <div class="selection-bar" id="quarantineSelection"></div>
+          <div class="queue" id="quarantined"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <nav class="mobile-nav" aria-label="Main navigation">
+    <button class="active" data-nav="overview" onclick="goTo('overview')">Overview</button>
+    <button data-nav="downloads" onclick="goTo('downloads')">Downloads</button>
+    <button data-nav="duplicates" onclick="goTo('duplicates')">Duplicates</button>
+    <button data-nav="library" onclick="goTo('library')">Library</button>
+    <button data-nav="quarantine" onclick="goTo('quarantine')">Quarantine</button>
+  </nav>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="modal-backdrop" id="modalBackdrop" onclick="closeModalFromBackdrop(event)">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head"><h2 id="modalTitle">Review selection</h2></div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-actions"><button onclick="closeModal()">Cancel</button><button class="primary" id="modalConfirm" onclick="confirmModalAction()">Continue</button></div>
+    </div>
+  </div>
+
+  <script>window.MEDIA_CLEANUP_RUNNING = __RUNNING__;</script>
+  <script src="/assets/dashboard.js"></script>
+</body>
+</html>

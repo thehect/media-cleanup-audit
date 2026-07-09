@@ -24,6 +24,7 @@ from media_cleanup_audit import (
     validate_config,
     fetch_jellyfin_user_id,
     fetch_sonarr,
+    library_index_rows,
 )
 
 
@@ -94,12 +95,12 @@ class MediaCleanupAuditTests(unittest.TestCase):
     def test_dashboard_renders_run_button_and_latest_report_area(self):
         state = DashboardState(config_path="/app/config.yml", output_dir=Path("/reports"))
         body = render_dashboard(state)
-        self.assertIn("Run Audit", body)
-        self.assertIn("Duplicate Candidates", body)
-        self.assertIn("Quarantined", body)
-        self.assertIn("Type DELETE", body)
-        self.assertIn("mobile-tabs", body)
-        self.assertIn("downloadsCard", body)
+        self.assertIn("Run audit", body)
+        self.assertIn("Duplicates", body)
+        self.assertIn("Quarantine", body)
+        self.assertIn("/assets/dashboard.css", body)
+        self.assertIn("/assets/dashboard.js", body)
+        self.assertIn("Library review", body)
 
     def test_dashboard_status_includes_latest_report_names(self):
         result = AuditResult(
@@ -248,6 +249,53 @@ class MediaCleanupAuditTests(unittest.TestCase):
         self.assertEqual(rows[0]["confidence"], "High")
         self.assertEqual(rows[0]["bucket"], "Likely imported leftover")
 
+    def test_download_cleanup_does_not_cross_match_episode_numbers(self):
+        rows = download_cleanup_rows(
+            [
+                {
+                    "path": "/data/downloads/Show.Name.S02E03.mkv",
+                    "parsed_id": "Show Name S02E03",
+                    "possible_type": "episode",
+                    "size": 100,
+                }
+            ],
+            [
+                {
+                    "kind": "episode",
+                    "identity": "Show Name S02E04",
+                    "path": "/data/tvshows/Show/Season 02/Show.Name.S02E04.mkv",
+                    "size": 80,
+                    "size_human": "80 B",
+                }
+            ],
+        )
+        self.assertEqual(rows[0]["confidence"], "Review")
+        self.assertEqual(rows[0]["keeper"], "")
+
+    def test_download_cleanup_exact_library_match_includes_keeper(self):
+        rows = download_cleanup_rows(
+            [
+                {
+                    "path": "/data/downloads/Show.Name.S02E03.1080p.mkv",
+                    "parsed_id": "Show Name S02E03",
+                    "possible_type": "episode",
+                    "size": 200,
+                }
+            ],
+            [
+                {
+                    "kind": "episode",
+                    "identity": "Show Name S02E03",
+                    "path": "/data/tvshows/Show/Season 02/Show.Name.S02E03.720p.mkv",
+                    "size": 100,
+                    "size_human": "100 B",
+                }
+            ],
+        )
+        self.assertEqual(rows[0]["confidence"], "High")
+        self.assertEqual(rows[0]["keeper"], "/data/tvshows/Show/Season 02/Show.Name.S02E03.720p.mkv")
+        self.assertEqual(rows[0]["keeper_size_human"], "100 B")
+
     def test_library_health_flags_large_downloads(self):
         cards = library_health_cards([{"location": "downloads", "file_count": 3314, "total_size": "7.1 TB"}])
         downloads = [card for card in cards if card["location"] == "downloads"][0]
@@ -269,6 +317,23 @@ class MediaCleanupAuditTests(unittest.TestCase):
         )
         self.assertEqual(rows[0]["keeper"], "/data/movies/Arrival/Arrival.720p.mkv")
         self.assertEqual(rows[0]["keeper_size_human"], "1.4 GB")
+
+    def test_library_index_uses_smallest_expected_library_file(self):
+        group = MediaGroup(
+            "sonarr:1",
+            "episode",
+            "Show Name S02E03",
+            "/data/tvshows/Show",
+            "1",
+            [
+                vf("/data/tvshows/Show/Season 02/Show.Name.S02E03.1080p.mkv", 200, 1),
+                vf("/data/tvshows/Show/Season 02/Show.Name.S02E03.720p.mkv", 100, 2, jellyfin=True),
+                vf("/data/downloads/Show.Name.S02E03.1080p.mkv", 200, 3),
+            ],
+        )
+        rows = library_index_rows([group])
+        self.assertEqual(rows[0]["path"], "/data/tvshows/Show/Season 02/Show.Name.S02E03.720p.mkv")
+        self.assertEqual(rows[0]["identity"], "Show Name S02E03")
 
 
 if __name__ == "__main__":

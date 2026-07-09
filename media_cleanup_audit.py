@@ -574,6 +574,30 @@ def build_groups(
     return groups, unmatched
 
 
+def library_index_rows(groups: list[MediaGroup]) -> list[dict[str, Any]]:
+    rows = []
+    for group in groups:
+        if not group.expected_path:
+            continue
+        expected_files = [vf for vf in group.files if is_under(vf.path, group.expected_path)]
+        if not expected_files:
+            continue
+        keeper = min(expected_files, key=lambda vf: (vf.size, vf.path))
+        parsed = parse_media_identity(keeper.path)
+        rows.append(
+            {
+                "kind": group.kind,
+                "title": group.title,
+                "identity": parsed.get("parsed_id", "") or group.title,
+                "path": keeper.path,
+                "size": keeper.size,
+                "size_human": human_size(keeper.size),
+                "jellyfin_visible": keeper.jellyfin_visible,
+            }
+        )
+    return rows
+
+
 def diagnostic_rows(
     config: dict[str, Any],
     files: list[VideoFile],
@@ -1054,6 +1078,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
     scan_result = scan_video_files(config)
     files = annotate_files(scan_result.files, jellyfin_paths, qbit_paths)
     groups, unmatched = build_groups(config, files, radarr, sonarr)
+    library_index = library_index_rows(groups)
     summary_rows, detail_rows = classify_groups(config, groups)
     unmatched_detail_rows = unmatched_rows(config, unmatched)
     unmatched_breakdown = unmatched_breakdown_rows(unmatched_detail_rows)
@@ -1075,6 +1100,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
         "details": detail_rows,
         "unmatched_breakdown": unmatched_breakdown,
         "scan_breakdown": scan_breakdown,
+        "library_index": library_index,
         "diagnostics": diagnostics,
         "counts": {
             "files_scanned": len(files),
@@ -1147,13 +1173,13 @@ def latest_raw_payload(state: DashboardState) -> dict[str, Any] | None:
 
 def dashboard_data(state: DashboardState) -> dict[str, Any]:
     raw = latest_raw_payload(state)
-    latest = result_payload(state.last_result) if state.last_result else None
+    latest = result_payload(state.last_result) if state.last_result else raw_result_payload(raw)
     details = raw.get("details", []) if raw else []
     duplicate_rows = [
         row for row in details
         if row.get("recommendation") == "safe_cleanup_candidate" and row.get("kind") in {"movie", "episode"}
     ]
-    safe_rows = [
+    library_review_rows = [
         row for row in details
         if row.get("kind") in {"unmatched", "inaccessible"}
         and row.get("location") in {"movies", "tv", "anime"}
@@ -1164,17 +1190,44 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
     ]
     config = load_config(state.config_path)
     quarantined = quarantine_inventory(config)
+    library_index = raw.get("library_index", []) if raw else []
+    download_match_source = library_index or (raw.get("summary", []) if raw else [])
     return {
         "status": render_status(state),
         "latest": latest,
+        "generated_at": raw.get("generated_at", "") if raw else "",
         "scan_breakdown": raw.get("scan_breakdown", []) if raw else [],
         "library_health": library_health_cards(raw.get("scan_breakdown", []) if raw else []),
-        "download_candidates": download_cleanup_rows(download_rows, raw.get("summary", []) if raw else []),
-        "download_summary": download_cleanup_summary(download_rows, raw.get("summary", []) if raw else []),
-        "duplicate_candidates": dashboard_candidate_rows(duplicate_rows),
-        "safe_candidates": dashboard_candidate_rows(safe_rows),
+        "download_candidates": download_cleanup_rows(download_rows, download_match_source, limit=5000),
+        "download_summary": download_cleanup_summary(download_rows, download_match_source),
+        "duplicate_candidates": dashboard_candidate_rows(duplicate_rows, limit=5000),
+        "library_review": dashboard_candidate_rows(library_review_rows, limit=5000),
+        "safe_candidates": dashboard_candidate_rows(library_review_rows, limit=5000),
         "quarantined": quarantined,
+        "protections": {
+            "qbittorrent_enabled": bool(config.get("qbittorrent", {}).get("enabled", False)),
+            "jellyfin_enabled": bool(config.get("jellyfin", {}).get("enabled", False)),
+            "radarr_enabled": bool(config.get("radarr", {}).get("enabled", False)),
+            "sonarr_enabled": bool(config.get("sonarr", {}).get("enabled", False)),
+        },
         "reports": report_names(raw, state),
+    }
+
+
+def raw_result_payload(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    summary = raw.get("summary", [])
+    counts = raw.get("counts", {})
+    safe_bytes = sum(int(row.get("reclaimable_bytes", 0) or 0) for row in summary)
+    return {
+        "stamp": raw.get("generated_at", ""),
+        "files_scanned": int(counts.get("files_scanned", 0) or 0),
+        "groups_count": int(counts.get("groups", 0) or 0),
+        "unmatched_count": int(counts.get("unmatched", 0) or 0),
+        "safe_count": sum(int(row.get("safe_cleanup_count", 0) or 0) for row in summary),
+        "review_count": sum(int(row.get("review_count", 0) or 0) for row in summary),
+        "reclaimable": human_size(safe_bytes),
     }
 
 
@@ -1191,6 +1244,7 @@ def dashboard_candidate_rows(rows: list[dict[str, Any]], limit: int = 250) -> li
                 "keeper_size": row.get("keeper_size", ""),
                 "keeper_size_human": row.get("keeper_size_human", ""),
                 "kind": row.get("kind", ""),
+                "location": row.get("location", ""),
                 "match": "same title / same library item / larger duplicate"
                 if row.get("recommendation") == "safe_cleanup_candidate"
                 else row.get("parsed_id", "") or "not visible to Jellyfin/Sonarr/Radarr",
@@ -1224,12 +1278,14 @@ def download_cleanup_summary(download_rows: list[dict[str, Any]], summary_rows: 
     rows = download_cleanup_rows(download_rows, summary_rows, limit=1000000)
     total = sum(int(row.get("size", 0) or 0) for row in rows)
     high = sum(1 for row in rows if row.get("confidence") == "High")
+    likely_bytes = sum(int(row.get("size", 0) or 0) for row in rows if row.get("confidence") == "High")
     review = sum(1 for row in rows if row.get("confidence") != "High")
     old = sum(1 for row in rows if isinstance(row.get("age_days"), int) and row["age_days"] >= 14)
     return {
         "items": len(rows),
         "total_size": human_size(total),
         "high_confidence": high,
+        "likely_reclaimable": human_size(likely_bytes),
         "review": review,
         "older_than_14_days": old,
     }
@@ -1237,20 +1293,30 @@ def download_cleanup_summary(download_rows: list[dict[str, Any]], summary_rows: 
 
 def download_cleanup_rows(
     download_rows: list[dict[str, Any]],
-    summary_rows: list[dict[str, Any]],
+    library_rows: list[dict[str, Any]],
     limit: int = 300,
 ) -> list[dict[str, Any]]:
-    library_keys = {identity_key(str(row.get("title", ""))) for row in summary_rows if row.get("title")}
+    library_by_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in library_rows:
+        identity = str(row.get("identity") or row.get("title") or "")
+        key = media_match_key(identity)
+        if key:
+            library_by_key[key].append(row)
     candidates = []
     for row in download_rows:
         parsed = str(row.get("parsed_id") or row.get("title") or row.get("path") or "")
         possible_type = str(row.get("possible_type") or "unknown")
-        key = identity_key(parsed)
+        key = media_match_key(parsed)
+        exact_matches = [
+            match for match in library_by_key.get(key, [])
+            if possible_type == "unknown" or not str(match.get("kind", "")) or str(match.get("kind", "")) == possible_type
+        ]
+        library_match = exact_matches[0] if len(exact_matches) == 1 else None
         confidence = "Review"
         bucket = "Unmatched download"
         if possible_type in {"episode", "movie"}:
             bucket = f"Likely {possible_type}"
-        if key and any(key.startswith(lib_key) or lib_key.startswith(key) for lib_key in library_keys if lib_key):
+        if library_match:
             confidence = "High"
             bucket = "Likely imported leftover"
         age = row.get("age_days", "")
@@ -1270,7 +1336,12 @@ def download_cleanup_rows(
                 "bucket": bucket,
                 "match": bucket,
                 "confidence": confidence,
-                "reason": row.get("reason", ""),
+                "keeper": library_match.get("path", "") if library_match else "",
+                "keeper_size": int(library_match.get("size", 0) or 0) if library_match else 0,
+                "keeper_size_human": library_match.get("size_human", "") if library_match else "",
+                "reason": "Matching library copy found for the same parsed title and episode/year."
+                if library_match
+                else row.get("reason", ""),
             }
         )
     confidence_order = {"High": 0, "Medium": 1, "Review": 2}
@@ -1282,6 +1353,12 @@ def download_cleanup_rows(
             -int(row.get("size", 0) or 0),
         ),
     )[:limit]
+
+
+def media_match_key(text: str) -> str:
+    value = text.lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def identity_key(text: str) -> str:
@@ -1486,6 +1563,9 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
                 except Exception as exc:
                     self.send_json({"error": str(exc)}, status=500)
                 return
+            if parsed.path.startswith("/assets/"):
+                self.send_asset_file(parsed.path.removeprefix("/assets/"))
+                return
             if parsed.path.startswith("/reports/"):
                 self.send_report_file(parsed.path.removeprefix("/reports/"))
                 return
@@ -1543,6 +1623,24 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
             self.send_header("Content-Length", str(len(content)))
             if path.suffix.lower() in {".csv", ".json"}:
                 self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+            self.end_headers()
+            self.wfile.write(content)
+
+        def send_asset_file(self, name: str) -> None:
+            safe_name = Path(urllib.parse.unquote(name)).name
+            if safe_name not in {"dashboard.css", "dashboard.js"}:
+                self.send_error(404)
+                return
+            path = Path(__file__).resolve().parent / safe_name
+            if not path.exists() or not path.is_file():
+                self.send_error(404)
+                return
+            content = path.read_bytes()
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            self.send_response(200)
+            self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
 
@@ -1612,7 +1710,7 @@ def result_payload(result: AuditResult) -> dict[str, Any]:
     }
 
 
-def render_dashboard(state: DashboardState) -> str:
+def render_dashboard_legacy(state: DashboardState) -> str:
     running = "true" if state.running else "false"
     return f"""<!doctype html>
 <html lang="en">
@@ -1912,6 +2010,19 @@ def render_dashboard(state: DashboardState) -> str:
   </script>
 </body>
 </html>"""
+
+
+def render_dashboard(state: DashboardState) -> str:
+    template_path = Path(__file__).resolve().parent / "dashboard.html"
+    if not template_path.exists():
+        return render_dashboard_legacy(state)
+    page = template_path.read_text(encoding="utf-8")
+    return (
+        page.replace("__RUNNING__", "true" if state.running else "false")
+        .replace("__BUSY_CLASS__", "busy" if state.running else "")
+        .replace("__STATUS_TEXT__", "Running audit" if state.running else "Ready")
+        .replace("__TIME_TEXT__", html.escape(render_time_text(state)))
+    )
 
 
 def render_latest_cards(latest: dict[str, Any] | None) -> str:

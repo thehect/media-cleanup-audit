@@ -50,22 +50,28 @@ Filename parsing is only a review hint. Unmatched files are never marked `safe_c
 
 The dashboard treats Downloads as its own cleanup lane because a healthy imported library can still leave a large downloads folder behind.
 
-Downloads are grouped into review buckets:
+Downloads are grouped into a dedicated work queue with search, filters, sorting, and side-by-side compare when an exact library match is found:
 
 - `Likely imported leftover`: parsed download appears to match an item already known to the library.
 - `Old episode download` or `Old movie download`: recognizable media file older than 14 days.
 - `Likely episode` or `Likely movie`: recognizable media that still needs review.
 - `Unmatched download`: video file that needs a human look.
 
-With qBittorrent disabled, the app cannot know whether a download is still seeding. Keep using quarantine first, then permanently delete only after verification.
+The dashboard loads long queues in batches so large download folders stay usable on mobile. `Select shown` only selects the currently visible batch.
 
-## Side-By-Side Duplicate Review
+With qBittorrent disabled, the app cannot know whether a download is still seeding. The dashboard shows a warning and keeps using quarantine first, then permanent delete only after verification.
 
-Duplicate candidates show a compare view before quarantine: `Quarantine This` on one side and `Keep This` on the other. Use it to verify the larger file being moved and the smaller/imported file that will remain.
+## Library Review
+
+Library review is the place for possible orphan/zombie video files inside Movies, TV, or Anime. These are files found on disk that the media apps did not confirm. They can be searched, filtered by library, selected in batches, and moved to quarantine only after review.
+
+## Side-By-Side Review
+
+Duplicate candidates and exact download/library matches show a compare view before quarantine: `Move to quarantine` on one side and `Keep in library` on the other. Use it to verify the file being moved and the smaller/imported file that will remain.
 
 ## Mobile Use
 
-The dashboard is responsive for phone review through a tunnel. On small screens it switches to one-column cards, larger checkboxes, larger buttons, sticky top controls, and quick section buttons for Downloads, Duplicates, Safe, and Quarantine.
+The dashboard is responsive for phone review through a tunnel. On small screens it switches to touch-friendly cards, larger checkboxes, sticky top controls, a bottom navigation bar for Overview, Downloads, Duplicates, Library, and Quarantine, and compact side-by-side compare panels.
 
 ## Quick Start
 
