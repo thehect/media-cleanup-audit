@@ -229,22 +229,40 @@ def is_under(path: str, root: str) -> bool:
     return path_n == root_n or path_n.startswith(root_n.rstrip("/") + "/")
 
 
-def api_get(url: str, headers: dict[str, str] | None = None, params: dict[str, Any] | None = None) -> Any:
+def api_get(
+    url: str,
+    headers: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+    label: str = "API request",
+) -> Any:
     if params:
         query = urllib.parse.urlencode(params)
         separator = "&" if "?" in url else "?"
         url = f"{url}{separator}{query}"
     request = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{label} failed: HTTP {exc.code} {exc.reason} at {url}. {body[:500]}") from exc
 
 
-def api_post_form(url: str, data: dict[str, Any], opener: urllib.request.OpenerDirector | None = None) -> str:
+def api_post_form(
+    url: str,
+    data: dict[str, Any],
+    opener: urllib.request.OpenerDirector | None = None,
+    label: str = "API request",
+) -> str:
     encoded = urllib.parse.urlencode(data).encode("utf-8")
     request = urllib.request.Request(url, data=encoded, method="POST")
     open_func = opener.open if opener else urllib.request.urlopen
-    with open_func(request, timeout=60) as response:
-        return response.read().decode("utf-8")
+    try:
+        with open_func(request, timeout=60) as response:
+            return response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{label} failed: HTTP {exc.code} {exc.reason} at {url}. {body[:500]}") from exc
 
 
 def fetch_radarr(config: dict[str, Any]) -> dict[str, Any]:
@@ -254,7 +272,7 @@ def fetch_radarr(config: dict[str, Any]) -> dict[str, Any]:
     url = str(radarr["url"]).rstrip("/")
     headers = {"X-Api-Key": str(radarr["api_key"])}
     log("Reading Radarr library...")
-    movies = api_get(f"{url}/api/v3/movie", headers=headers)
+    movies = api_get(f"{url}/api/v3/movie", headers=headers, label="Radarr movie library")
     movie_files: dict[int, Any] = {}
     for movie in movies:
         movie_file = movie.get("movieFile")
@@ -270,18 +288,18 @@ def fetch_sonarr(config: dict[str, Any]) -> dict[str, Any]:
     url = str(sonarr["url"]).rstrip("/")
     headers = {"X-Api-Key": str(sonarr["api_key"])}
     log("Reading Sonarr series and episodes...")
-    series = api_get(f"{url}/api/v3/series", headers=headers)
+    series = api_get(f"{url}/api/v3/series", headers=headers, label="Sonarr series library")
     episodes: list[dict[str, Any]] = []
     for item in series:
         series_id = item.get("id")
         if series_id is None:
             continue
-        episodes.extend(api_get(f"{url}/api/v3/episode", headers=headers, params={"seriesId": series_id}))
+        episodes.extend(api_get(f"{url}/api/v3/episode", headers=headers, params={"seriesId": series_id}, label=f"Sonarr episodes for series {series_id}"))
     episode_file_ids = sorted({e.get("episodeFileId") for e in episodes if e.get("episodeFileId")})
     episode_files: dict[int, Any] = {}
     for chunk in chunks(episode_file_ids, 100):
         ids = ",".join(str(i) for i in chunk)
-        for item in api_get(f"{url}/api/v3/episodefile", headers=headers, params={"episodeFileIds": ids}):
+        for item in api_get(f"{url}/api/v3/episodefile", headers=headers, params={"episodeFileIds": ids}, label="Sonarr episode files"):
             episode_files[int(item["id"])] = item
     return {"series": series, "episodes": episodes, "episode_files": episode_files}
 
@@ -297,12 +315,15 @@ def fetch_jellyfin_paths(config: dict[str, Any]) -> set[str]:
     url = str(jellyfin["url"]).rstrip("/")
     headers = {"X-Emby-Token": str(jellyfin["api_key"])}
     log("Reading Jellyfin visible media paths...")
+    user_id = str(jellyfin.get("user_id") or "").strip()
+    if not user_id:
+        user_id = fetch_jellyfin_user_id(url, headers)
     paths: set[str] = set()
     start = 0
     limit = 1000
     while True:
         payload = api_get(
-            f"{url}/Items",
+            f"{url}/Users/{urllib.parse.quote(user_id)}/Items",
             headers=headers,
             params={
                 "Recursive": "true",
@@ -311,6 +332,7 @@ def fetch_jellyfin_paths(config: dict[str, Any]) -> set[str]:
                 "StartIndex": start,
                 "Limit": limit,
             },
+            label="Jellyfin visible items",
         )
         items = payload.get("Items", [])
         for item in items:
@@ -324,6 +346,15 @@ def fetch_jellyfin_paths(config: dict[str, Any]) -> set[str]:
     return paths
 
 
+def fetch_jellyfin_user_id(url: str, headers: dict[str, str]) -> str:
+    users = api_get(f"{url}/Users", headers=headers, label="Jellyfin users")
+    for user in users:
+        policy = user.get("Policy") or {}
+        if not policy.get("IsDisabled") and user.get("Id"):
+            return str(user["Id"])
+    raise RuntimeError("Jellyfin users lookup returned no enabled users. Set jellyfin.user_id in config.yml.")
+
+
 def fetch_qbit_paths(config: dict[str, Any]) -> set[str]:
     qbit = config.get("qbittorrent", {})
     if not qbit.get("enabled", True):
@@ -335,6 +366,7 @@ def fetch_qbit_paths(config: dict[str, Any]) -> set[str]:
         f"{url}/api/v2/auth/login",
         {"username": qbit.get("username", ""), "password": qbit.get("password", "")},
         opener,
+        label="qBittorrent login",
     )
     if login_text.strip().lower() not in {"ok.", "ok"}:
         raise RuntimeError("qBittorrent login failed")

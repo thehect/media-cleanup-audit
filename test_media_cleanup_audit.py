@@ -12,6 +12,7 @@ from media_cleanup_audit import (
     render_status,
     resolve_media_file_path,
     validate_config,
+    fetch_jellyfin_user_id,
 )
 
 
@@ -103,6 +104,19 @@ class MediaCleanupAuditTests(unittest.TestCase):
         status = render_status(state)
         self.assertEqual(status["latest"]["safe_count"], 2)
         self.assertEqual(status["latest"]["html_report"], "report.html")
+
+    def test_jellyfin_user_picker_skips_disabled_users(self):
+        import media_cleanup_audit
+
+        original = media_cleanup_audit.api_get
+        try:
+            media_cleanup_audit.api_get = lambda *args, **kwargs: [
+                {"Id": "disabled", "Policy": {"IsDisabled": True}},
+                {"Id": "enabled", "Policy": {"IsDisabled": False}},
+            ]
+            self.assertEqual(fetch_jellyfin_user_id("http://jellyfin:8096", {}), "enabled")
+        finally:
+            media_cleanup_audit.api_get = original
 
 
 if __name__ == "__main__":

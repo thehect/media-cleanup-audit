@@ -31,6 +31,8 @@ jellyfin:
   enabled: true
   url: http://jellyfin:8096
   api_key: ${JELLYFIN_API_KEY}
+  # Optional. If omitted, the first enabled Jellyfin user is used.
+  user_id:
 
 radarr:
   enabled: true
