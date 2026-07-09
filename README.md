@@ -4,7 +4,7 @@ Dockerized read-only audit tool with a smooth web dashboard for a Jellyfin + Son
 
 It scans configured media/download roots for video files, reads your app APIs, and produces CSV + HTML reports showing likely duplicate media, protected seeding paths, hardlinks, and cleanup candidates. The dashboard runs on port `6996`.
 
-V1 does not move, delete, rename, or modify Sonarr/Radarr/Jellyfin/qBittorrent records.
+By default the included Docker compose keeps media mounts read-only. Quarantine actions require an explicit writable mount opt-in. The app never modifies Sonarr/Radarr/Jellyfin/qBittorrent records.
 
 ## What It Treats As Truth
 
@@ -27,6 +27,14 @@ A larger file is only marked `safe_cleanup_candidate` when:
 - the larger file is not the only Jellyfin-visible version
 
 Everything else becomes `review`.
+
+The cleanup flow is always:
+
+```text
+Scan -> Quarantine -> Permanent Delete
+```
+
+There is no Scan -> Delete path. Permanent delete is only available from the Quarantined screen and requires typing `DELETE`.
 
 ## Unmatched Files
 
@@ -68,6 +76,21 @@ By default, the included compose file mounts `/mnt/Movies`, `/mnt/TvShows`, `/mn
 ```bash
 MOVIES_ROOT=/mnt/Movies TVSHOWS_ROOT=/mnt/TvShows ANIME_ROOT=/mnt/Anime DOWNLOADS_ROOT=/mnt/downloads MEDIA_NETWORK=your_media_network docker compose up -d --build mediacleanup
 ```
+
+To enable quarantine moves after you have reviewed the audit results, add this to `.env`:
+
+```bash
+MEDIA_MOUNT_MODE=rw
+QUARANTINE_ROOT=/mnt/MediaCleanupQuarantine
+```
+
+Then rebuild:
+
+```bash
+docker compose up -d --build mediacleanup
+```
+
+Quarantine creates a `README.txt` and `mediacleanup-quarantine.json` manifest in the quarantine folder. Restore uses that manifest to move files back to their original path.
 
 ## One-Command GitHub Install
 
@@ -119,10 +142,11 @@ services:
     volumes:
       - ./config.yml:/app/config.yml:ro
       - ./reports:/reports
-      - /mnt/Movies:/data/movies:ro
-      - /mnt/TvShows:/data/tvshows:ro
-      - /mnt/Anime:/data/anime:ro
-      - /mnt/downloads:/data/downloads:ro
+      - ./quarantine:/data/_erase_later
+      - /mnt/Movies:/data/movies:${MEDIA_MOUNT_MODE:-ro}
+      - /mnt/TvShows:/data/tvshows:${MEDIA_MOUNT_MODE:-ro}
+      - /mnt/Anime:/data/anime:${MEDIA_MOUNT_MODE:-ro}
+      - /mnt/downloads:/data/downloads:${MEDIA_MOUNT_MODE:-ro}
     ports:
       - "6996:6996"
     networks:
@@ -136,7 +160,7 @@ networks:
     name: proxy_network
 ```
 
-Keep the media mount read-only for V1.
+Keep `MEDIA_MOUNT_MODE=ro` for audit-only mode. Use `MEDIA_MOUNT_MODE=rw` only when you are ready to quarantine selected files.
 
 ## Local Commands
 

@@ -9,11 +9,13 @@ from media_cleanup_audit import (
     classify_groups,
     canonicalize_path,
     classify_unmatched,
+    delete_quarantined,
     gather_episode_candidates,
     parse_media_identity,
     render_dashboard,
     render_status,
     resolve_media_file_path,
+    scan_breakdown_rows,
     scan_error_rows,
     unmatched_breakdown_rows,
     validate_config,
@@ -90,7 +92,9 @@ class MediaCleanupAuditTests(unittest.TestCase):
         state = DashboardState(config_path="/app/config.yml", output_dir=Path("/reports"))
         body = render_dashboard(state)
         self.assertIn("Run Audit", body)
-        self.assertIn("Latest Report", body)
+        self.assertIn("Duplicate Candidates", body)
+        self.assertIn("Quarantined", body)
+        self.assertIn("Type DELETE", body)
 
     def test_dashboard_status_includes_latest_report_names(self):
         result = AuditResult(
@@ -198,6 +202,30 @@ class MediaCleanupAuditTests(unittest.TestCase):
         breakdown = unmatched_breakdown_rows(rows)
         self.assertEqual(breakdown[0]["file_count"], 2)
         self.assertEqual(breakdown[0]["total_bytes"], 400)
+
+    def test_scan_breakdown_counts_configured_roots(self):
+        config = {
+            "media_roots": {"movies": "/data/movies", "tv": "/data/tvshows", "downloads": "/data/downloads"},
+            "scan": {"roots": ["/data/movies", "/data/tvshows", "/data/anime", "/data/downloads"]},
+        }
+        rows = scan_breakdown_rows(
+            config,
+            [
+                vf("/data/movies/Arrival/Arrival.mkv", 100, 1),
+                vf("/data/tvshows/Show/Show.S01E01.mkv", 200, 2),
+                vf("/data/anime/Series/E01.mkv", 300, 3),
+            ],
+        )
+        by_location = {row["location"]: row for row in rows}
+        self.assertEqual(by_location["movies"]["file_count"], 1)
+        self.assertEqual(by_location["tv"]["file_count"], 1)
+        self.assertEqual(by_location["anime"]["file_count"], 1)
+
+    def test_permanent_delete_requires_confirmation(self):
+        state = DashboardState(config_path="/app/config.yml", output_dir=Path("/reports"))
+        result = delete_quarantined(state, ["anything"], "delete")
+        self.assertEqual(result["deleted"], [])
+        self.assertIn("DELETE", result["errors"][0]["error"])
 
 
 if __name__ == "__main__":

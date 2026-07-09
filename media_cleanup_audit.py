@@ -12,6 +12,7 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import socket
 import sys
 import threading
@@ -897,6 +898,36 @@ def unmatched_breakdown_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
     return sorted(buckets.values(), key=lambda row: (str(row["location"]), str(row["possible_type"])))
 
 
+def scan_breakdown_rows(config: dict[str, Any], files: list[VideoFile]) -> list[dict[str, Any]]:
+    roots = config.get("media_roots", {})
+    labels = [
+        ("movies", roots.get("movies", "")),
+        ("tv", roots.get("tv", "")),
+        ("downloads", roots.get("downloads", "")),
+    ]
+    scan_roots = [str(root) for root in config.get("scan", {}).get("roots", []) or []]
+    for root in scan_roots:
+        if root and "anime" in normalize_path(root) and not any(label == "anime" for label, _ in labels):
+            labels.insert(2, ("anime", root))
+    buckets: dict[str, dict[str, Any]] = {}
+    for label, root in labels:
+        if root:
+            buckets[label] = {"location": label, "root": root, "file_count": 0, "total_bytes": 0, "total_size": "0 B"}
+    buckets["other"] = {"location": "other", "root": "", "file_count": 0, "total_bytes": 0, "total_size": "0 B"}
+    for vf in files:
+        label = "other"
+        for candidate, root in labels:
+            if root and is_under(vf.path, root):
+                label = candidate
+                break
+        bucket = buckets.setdefault(label, {"location": label, "root": "", "file_count": 0, "total_bytes": 0, "total_size": "0 B"})
+        bucket["file_count"] += 1
+        bucket["total_bytes"] += vf.size
+    for bucket in buckets.values():
+        bucket["total_size"] = human_size(int(bucket["total_bytes"]))
+    return [row for row in buckets.values() if row["file_count"] or row["location"] != "other"]
+
+
 def scan_error_rows(errors: list[dict[str, str]]) -> list[dict[str, Any]]:
     rows = []
     for error in errors:
@@ -1008,6 +1039,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
     summary_rows, detail_rows = classify_groups(config, groups)
     unmatched_detail_rows = unmatched_rows(config, unmatched)
     unmatched_breakdown = unmatched_breakdown_rows(unmatched_detail_rows)
+    scan_breakdown = scan_breakdown_rows(config, files)
     detail_rows.extend(unmatched_detail_rows)
     detail_rows.extend(scan_error_rows(scan_result.errors))
     diagnostics = diagnostic_rows(config, files, radarr, sonarr, jellyfin_raw_paths, jellyfin_paths, qbit_paths)
@@ -1024,6 +1056,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
         "summary": summary_rows,
         "details": detail_rows,
         "unmatched_breakdown": unmatched_breakdown,
+        "scan_breakdown": scan_breakdown,
         "diagnostics": diagnostics,
         "counts": {
             "files_scanned": len(files),
@@ -1078,6 +1111,242 @@ def row_fields(rows: list[dict[str, Any]]) -> list[str]:
     return fields
 
 
+def latest_raw_payload(state: DashboardState) -> dict[str, Any] | None:
+    result = state.last_result
+    if not result or not result.raw_json.exists():
+        latest = sorted(state.output_dir.glob("media-cleanup-raw-*.json"), reverse=True)
+        if not latest:
+            return None
+        try:
+            return json.loads(latest[0].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+    try:
+        return json.loads(result.raw_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def dashboard_data(state: DashboardState) -> dict[str, Any]:
+    raw = latest_raw_payload(state)
+    latest = result_payload(state.last_result) if state.last_result else None
+    details = raw.get("details", []) if raw else []
+    duplicate_rows = [
+        row for row in details
+        if row.get("recommendation") == "safe_cleanup_candidate" and row.get("kind") in {"movie", "episode"}
+    ]
+    safe_rows = [
+        row for row in details
+        if row.get("kind") in {"unmatched", "inaccessible"}
+        and row.get("location") in {"movies", "tv", "anime"}
+    ]
+    config = load_config(state.config_path)
+    quarantined = quarantine_inventory(config)
+    return {
+        "status": render_status(state),
+        "latest": latest,
+        "scan_breakdown": raw.get("scan_breakdown", []) if raw else [],
+        "duplicate_candidates": dashboard_candidate_rows(duplicate_rows),
+        "safe_candidates": dashboard_candidate_rows(safe_rows),
+        "quarantined": quarantined,
+        "reports": report_names(raw, state),
+    }
+
+
+def dashboard_candidate_rows(rows: list[dict[str, Any]], limit: int = 250) -> list[dict[str, Any]]:
+    candidates = []
+    for row in rows[:limit]:
+        candidates.append(
+            {
+                "path": row.get("path", ""),
+                "title": row.get("title", "") or row.get("parsed_id", "") or row.get("path", ""),
+                "size_human": row.get("size_human", ""),
+                "size": row.get("size", 0),
+                "kind": row.get("kind", ""),
+                "match": "same title / same library item / larger duplicate"
+                if row.get("recommendation") == "safe_cleanup_candidate"
+                else row.get("parsed_id", "") or "not visible to Jellyfin/Sonarr/Radarr",
+                "confidence": "High" if row.get("recommendation") == "safe_cleanup_candidate" else "Review",
+                "reason": row.get("reason", ""),
+            }
+        )
+    return candidates
+
+
+def report_names(raw: dict[str, Any] | None, state: DashboardState) -> dict[str, str]:
+    latest = result_payload(state.last_result) if state.last_result else None
+    if latest:
+        return {key: latest[key] for key in ("html_report", "summary_csv", "details_csv", "raw_json")}
+    files = sorted(state.output_dir.glob("media-cleanup-raw-*.json"), reverse=True)
+    if not files:
+        return {}
+    stamp = files[0].stem.removeprefix("media-cleanup-raw-")
+    return {
+        "html_report": f"media-cleanup-report-{stamp}.html",
+        "summary_csv": f"media-cleanup-summary-{stamp}.csv",
+        "details_csv": f"media-cleanup-details-{stamp}.csv",
+        "raw_json": files[0].name,
+    }
+
+
+def quarantine_root(config: dict[str, Any]) -> Path:
+    root = str(config.get("media_roots", {}).get("erase_later", "/data/_erase_later")).strip()
+    return Path(root)
+
+
+def quarantine_manifest_path(config: dict[str, Any]) -> Path:
+    return quarantine_root(config) / "mediacleanup-quarantine.json"
+
+
+def read_quarantine_manifest(config: dict[str, Any]) -> list[dict[str, Any]]:
+    path = quarantine_manifest_path(config)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def write_quarantine_manifest(config: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    root = quarantine_root(config)
+    root.mkdir(parents=True, exist_ok=True)
+    quarantine_readme(root)
+    quarantine_manifest_path(config).write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
+
+def quarantine_readme(root: Path) -> None:
+    readme = root / "README.txt"
+    if readme.exists():
+        return
+    readme.write_text(
+        "Media Cleanup quarantine folder\n\n"
+        "Files here were moved by Media Cleanup after a user selected them in the dashboard.\n"
+        "This is the middle safety stage between scan and permanent delete.\n"
+        "Use the dashboard to restore files or permanently delete them after verification.\n",
+        encoding="utf-8",
+    )
+
+
+def quarantine_inventory(config: dict[str, Any]) -> dict[str, Any]:
+    rows = read_quarantine_manifest(config)
+    active = [row for row in rows if row.get("status", "quarantined") == "quarantined"]
+    total = sum(int(row.get("size", 0) or 0) for row in active)
+    return {
+        "empty": not active,
+        "items": len(active),
+        "recoverable_size": human_size(total),
+        "rows": active,
+    }
+
+
+def latest_detail_map(state: DashboardState) -> dict[str, dict[str, Any]]:
+    raw = latest_raw_payload(state) or {}
+    return {str(row.get("path", "")): row for row in raw.get("details", []) if row.get("path")}
+
+
+def quarantine_selected(state: DashboardState, paths: list[str]) -> dict[str, Any]:
+    config = load_config(state.config_path)
+    root = quarantine_root(config)
+    allowed = latest_detail_map(state)
+    manifest = read_quarantine_manifest(config)
+    moved = []
+    errors = []
+    batch = datetime.now().strftime("%Y%m%d-%H%M%S")
+    for path_text in paths:
+        row = allowed.get(path_text)
+        if not row:
+            errors.append({"path": path_text, "error": "not found in latest audit details"})
+            continue
+        if str(row.get("protected_by_qbit", "")).lower() == "true":
+            errors.append({"path": path_text, "error": "protected by qBittorrent"})
+            continue
+        source = Path(path_text)
+        if not source.exists():
+            errors.append({"path": path_text, "error": "file no longer exists"})
+            continue
+        relative = str(source).replace("\\", "/").lstrip("/")
+        dest = root / batch / relative
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            quarantine_readme(root)
+            shutil.move(str(source), str(dest))
+        except OSError as exc:
+            errors.append({"path": path_text, "error": str(exc)})
+            continue
+        record = {
+            "id": f"{batch}:{len(manifest) + len(moved) + 1}",
+            "original_path": str(source),
+            "quarantine_path": str(dest),
+            "size": int(row.get("size", 0) or 0),
+            "size_human": row.get("size_human", ""),
+            "title": row.get("title", ""),
+            "reason": row.get("reason", ""),
+            "moved_at": datetime.now().isoformat(timespec="seconds"),
+            "status": "quarantined",
+        }
+        manifest.append(record)
+        moved.append(record)
+    if moved:
+        write_quarantine_manifest(config, manifest)
+    return {"moved": moved, "errors": errors, "quarantined": quarantine_inventory(config)}
+
+
+def restore_quarantined(state: DashboardState, ids: list[str]) -> dict[str, Any]:
+    config = load_config(state.config_path)
+    manifest = read_quarantine_manifest(config)
+    restored = []
+    errors = []
+    selected = set(ids)
+    for row in manifest:
+        if row.get("id") not in selected or row.get("status", "quarantined") != "quarantined":
+            continue
+        source = Path(str(row.get("quarantine_path", "")))
+        dest = Path(str(row.get("original_path", "")))
+        if not source.exists():
+            errors.append({"id": row.get("id"), "error": "quarantined file is missing"})
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(dest))
+        except OSError as exc:
+            errors.append({"id": row.get("id"), "error": str(exc)})
+            continue
+        row["status"] = "restored"
+        row["restored_at"] = datetime.now().isoformat(timespec="seconds")
+        restored.append(row)
+    if restored:
+        write_quarantine_manifest(config, manifest)
+    return {"restored": restored, "errors": errors, "quarantined": quarantine_inventory(config)}
+
+
+def delete_quarantined(state: DashboardState, ids: list[str], confirmation: str) -> dict[str, Any]:
+    if confirmation != "DELETE":
+        return {"deleted": [], "errors": [{"error": "type DELETE to permanently delete selected files"}]}
+    config = load_config(state.config_path)
+    manifest = read_quarantine_manifest(config)
+    deleted = []
+    errors = []
+    selected = set(ids)
+    for row in manifest:
+        if row.get("id") not in selected or row.get("status", "quarantined") != "quarantined":
+            continue
+        path = Path(str(row.get("quarantine_path", "")))
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError as exc:
+            errors.append({"id": row.get("id"), "error": str(exc)})
+            continue
+        row["status"] = "deleted"
+        row["deleted_at"] = datetime.now().isoformat(timespec="seconds")
+        deleted.append(row)
+    if deleted:
+        write_quarantine_manifest(config, manifest)
+    return {"deleted": deleted, "errors": errors, "quarantined": quarantine_inventory(config)}
+
+
 def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: int) -> None:
     state = DashboardState(config_path=config_path, output_dir=Path(output_dir))
     state.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1091,6 +1360,12 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
             if parsed.path == "/status":
                 self.send_json(render_status(state))
                 return
+            if parsed.path == "/data":
+                try:
+                    self.send_json(dashboard_data(state))
+                except Exception as exc:
+                    self.send_json({"error": str(exc)}, status=500)
+                return
             if parsed.path.startswith("/reports/"):
                 self.send_report_file(parsed.path.removeprefix("/reports/"))
                 return
@@ -1101,6 +1376,18 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
             if parsed.path == "/run":
                 started = start_dashboard_audit(state)
                 self.send_json({"started": started, **render_status(state)})
+                return
+            if parsed.path == "/quarantine":
+                payload = self.read_json_body()
+                self.send_json(quarantine_selected(state, list(payload.get("paths", []))))
+                return
+            if parsed.path == "/restore":
+                payload = self.read_json_body()
+                self.send_json(restore_quarantined(state, list(payload.get("ids", []))))
+                return
+            if parsed.path == "/delete":
+                payload = self.read_json_body()
+                self.send_json(delete_quarantined(state, list(payload.get("ids", [])), str(payload.get("confirmation", ""))))
                 return
             self.send_error(404)
 
@@ -1138,6 +1425,15 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
                 self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
             self.end_headers()
             self.wfile.write(content)
+
+        def read_json_body(self) -> dict[str, Any]:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length <= 0:
+                return {}
+            try:
+                return json.loads(self.rfile.read(length).decode("utf-8"))
+            except json.JSONDecodeError:
+                return {}
 
     server = ThreadingHTTPServer((host, port), Handler)
     log(f"Media Cleanup dashboard listening on http://{host}:{port}")
@@ -1197,10 +1493,6 @@ def result_payload(result: AuditResult) -> dict[str, Any]:
 
 
 def render_dashboard(state: DashboardState) -> str:
-    latest = result_payload(state.last_result) if state.last_result else None
-    latest_cards = render_latest_cards(latest)
-    report_links = render_report_links(latest)
-    error = f"<div class='notice error'>{html.escape(state.last_error)}</div>" if state.last_error else ""
     running = "true" if state.running else "false"
     return f"""<!doctype html>
 <html lang="en">
@@ -1210,45 +1502,42 @@ def render_dashboard(state: DashboardState) -> str:
   <title>Media Cleanup</title>
   <style>
     :root {{
-      color-scheme: light;
-      --bg: #f7f8fa;
-      --panel: #ffffff;
-      --ink: #17202a;
-      --muted: #657080;
-      --line: #dfe4ea;
-      --green: #136f3a;
-      --amber: #9a6400;
-      --blue: #1459a8;
-      --red: #b42318;
+      --bg: #f4f6f8; --panel: #fff; --ink: #17202a; --muted: #667085;
+      --line: #d9e0e8; --blue: #175cd3; --green: #067647; --amber: #a15c07;
+      --red: #b42318; --soft: #eef4ff;
     }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }}
-    main {{ max-width: 1180px; margin: 0 auto; padding: 28px; }}
-    header {{ display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 24px; }}
-    h1 {{ font-size: 28px; margin: 0; letter-spacing: 0; }}
-    .sub {{ color: var(--muted); margin-top: 6px; font-size: 14px; }}
-    .button {{ border: 0; border-radius: 8px; padding: 12px 18px; background: var(--blue); color: white; font-size: 15px; font-weight: 700; cursor: pointer; min-width: 132px; }}
-    .button[disabled] {{ opacity: .55; cursor: wait; }}
-    .grid {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }}
-    .metric, .panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }}
-    .metric {{ padding: 16px; min-height: 94px; }}
-    .label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; font-weight: 800; letter-spacing: .04em; }}
-    .value {{ margin-top: 8px; font-size: 24px; font-weight: 800; overflow-wrap: anywhere; }}
-    .value.green {{ color: var(--green); }}
-    .value.amber {{ color: var(--amber); }}
-    .panel {{ padding: 18px; margin-top: 14px; }}
-    .row {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }}
-    .status {{ display: inline-flex; align-items: center; gap: 8px; font-weight: 800; }}
-    .dot {{ width: 10px; height: 10px; border-radius: 999px; background: var(--green); }}
-    .dot.busy {{ background: var(--amber); animation: pulse 1s infinite; }}
-    @keyframes pulse {{ 0%, 100% {{ opacity: .35 }} 50% {{ opacity: 1 }} }}
-    .links {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }}
-    .link {{ color: var(--blue); text-decoration: none; font-weight: 700; border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; background: #fff; }}
-    .notice {{ padding: 12px 14px; border-radius: 8px; background: #fff7ed; border: 1px solid #fed7aa; margin-top: 14px; color: #7c2d12; }}
+    main {{ max-width: 1240px; margin: 0 auto; padding: 24px; }}
+    header {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }}
+    h1 {{ margin: 0; font-size: 28px; }}
+    h2 {{ margin: 0; font-size: 17px; }}
+    .header-actions, .actions, .links {{ display: flex; gap: 10px; flex-wrap: wrap; }}
+    button, .link {{ border: 1px solid var(--line); border-radius: 8px; padding: 10px 13px; background: #fff; color: var(--ink); font-weight: 800; cursor: pointer; text-decoration: none; }}
+    .primary {{ background: var(--blue); color: #fff; border-color: var(--blue); }}
+    .danger {{ background: var(--red); color: #fff; border-color: var(--red); }}
+    button[disabled] {{ opacity: .55; cursor: wait; }}
+    .sub, .meta {{ color: var(--muted); font-size: 13px; }}
+    .layout {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }}
+    .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }}
+    .wide {{ grid-column: 1 / -1; }}
+    .card-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 12px; }}
+    .stats {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }}
+    .stat {{ border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfcfe; min-height: 76px; }}
+    .label {{ color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 900; letter-spacing: .04em; }}
+    .value {{ margin-top: 6px; font-size: 22px; font-weight: 900; overflow-wrap: anywhere; }}
+    .green {{ color: var(--green); }} .amber {{ color: var(--amber); }} .red {{ color: var(--red); }}
+    .list {{ display: grid; gap: 8px; max-height: 440px; overflow: auto; padding-right: 2px; }}
+    .item {{ display: grid; grid-template-columns: 28px 1fr; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; }}
+    .item-title {{ font-weight: 850; overflow-wrap: anywhere; }}
+    .path {{ color: var(--muted); font-size: 12px; overflow-wrap: anywhere; margin-top: 4px; }}
+    .pill {{ display: inline-flex; border-radius: 999px; background: var(--soft); color: var(--blue); font-size: 12px; font-weight: 850; padding: 3px 8px; margin-right: 6px; margin-top: 8px; }}
+    .notice {{ padding: 12px 14px; border-radius: 8px; background: #fff7ed; border: 1px solid #fed7aa; color: #7c2d12; }}
     .error {{ background: #fef3f2; border-color: #fecdca; color: var(--red); }}
-    iframe {{ width: 100%; height: 680px; border: 1px solid var(--line); border-radius: 8px; background: white; }}
-    @media (max-width: 900px) {{ main {{ padding: 18px; }} header {{ align-items: flex-start; flex-direction: column; }} .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
-    @media (max-width: 560px) {{ .grid {{ grid-template-columns: 1fr; }} .button {{ width: 100%; }} }}
+    .dot {{ width: 10px; height: 10px; border-radius: 999px; background: var(--green); display: inline-block; margin-right: 8px; }}
+    .busy {{ background: var(--amber); animation: pulse 1s infinite; }}
+    @keyframes pulse {{ 0%, 100% {{ opacity: .35 }} 50% {{ opacity: 1 }} }}
+    @media (max-width: 900px) {{ main {{ padding: 16px; }} header {{ flex-direction: column; align-items: stretch; }} .layout, .stats {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
@@ -1256,29 +1545,54 @@ def render_dashboard(state: DashboardState) -> str:
     <header>
       <div>
         <h1>Media Cleanup</h1>
-        <div class="sub">Read-only audit for Jellyfin, Sonarr, Radarr, qBittorrent, and NAS video files.</div>
+        <div class="sub"><span id="dot" class="dot {'busy' if state.running else ''}"></span><span id="statusText">{'Running audit' if state.running else 'Ready'}</span> | <span id="timeText">{html.escape(render_time_text(state))}</span></div>
       </div>
-      <button id="run" class="button" onclick="runAudit()">Run Audit</button>
+      <div class="header-actions">
+        <button id="run" class="primary" onclick="runAudit()">Run Audit</button>
+        <button onclick="scrollToCard('quarantineCard')">Quarantined</button>
+      </div>
     </header>
-    <section id="metrics" class="grid">{latest_cards}</section>
-    <section class="panel">
-      <div class="row">
-        <div>
-          <div class="status"><span id="dot" class="dot {'busy' if state.running else ''}"></span><span id="statusText">{'Running audit' if state.running else 'Ready'}</span></div>
-          <div class="sub" id="timeText">{html.escape(render_time_text(state))}</div>
-        </div>
-        <div class="sub">Config: {html.escape(state.config_path)} | Reports: {html.escape(str(state.output_dir))}</div>
+    <div id="message"></div>
+    <section class="stats" id="stats"></section>
+    <section class="layout" style="margin-top:14px;">
+      <div class="card">
+        <div class="card-head"><h2>Scanned</h2><span class="meta" id="scanTotal"></span></div>
+        <div id="scanned"></div>
       </div>
-      <div id="links">{report_links}</div>
-      <div id="error">{error}</div>
-    </section>
-    <section class="panel">
-      <div class="row"><h2 style="margin:0;font-size:18px;">Latest Report</h2></div>
-      <div style="margin-top:14px;" id="reportFrame">{render_report_frame(latest)}</div>
+      <div class="card" id="quarantineCard">
+        <div class="card-head"><h2>Quarantined</h2><span class="meta" id="quarantineSummary"></span></div>
+        <div class="actions">
+          <button onclick="restoreSelected()">Restore</button>
+          <button class="danger" onclick="deleteSelected()">Delete Permanently</button>
+        </div>
+        <div class="list" id="quarantined" style="margin-top:12px;"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Duplicate Candidates</h2><span class="meta" id="duplicateSummary"></span></div>
+        <div class="actions">
+          <button onclick="reviewCard('duplicates')">Review</button>
+          <button class="primary" onclick="quarantineSelected('duplicate')">Quarantine Selected</button>
+        </div>
+        <div class="list" id="duplicates" style="margin-top:12px;"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Safe Candidates</h2><span class="meta" id="safeSummary"></span></div>
+        <div class="actions">
+          <button onclick="reviewCard('safe')">Review</button>
+          <button class="primary" onclick="quarantineSelected('safe')">Quarantine Selected</button>
+        </div>
+        <div class="list" id="safe" style="margin-top:12px;"></div>
+      </div>
+      <div class="card wide">
+        <div class="card-head"><h2>Read Me</h2><span class="meta">Scan -> Quarantine -> Permanent Delete</span></div>
+        <div class="sub">No scan result is ever deleted directly. Selected items move to the quarantine folder first. Permanent delete is only available from Quarantined and requires typing DELETE.</div>
+        <div class="links" id="links" style="margin-top:12px;"></div>
+      </div>
     </section>
   </main>
   <script>
     let running = {running};
+    let lastData = null;
     async function runAudit() {{
       const button = document.getElementById('run');
       button.disabled = true;
@@ -1288,43 +1602,122 @@ def render_dashboard(state: DashboardState) -> str:
       poll();
     }}
     async function poll() {{
-      const res = await fetch('/status');
+      const res = await fetch('/data');
       const data = await res.json();
       render(data);
-      if (data.running) setTimeout(poll, 1500);
+      if (data.status && data.status.running) setTimeout(poll, 1500);
     }}
     function render(data) {{
-      document.getElementById('run').disabled = data.running;
-      document.getElementById('dot').classList.toggle('busy', data.running);
-      document.getElementById('statusText').textContent = data.running ? 'Running audit' : 'Ready';
-      document.getElementById('timeText').textContent = data.last_finished ? `Last finished ${{data.last_finished}}` : (data.last_started ? `Started ${{data.last_started}}` : 'No audit has run yet');
-      document.getElementById('error').innerHTML = data.last_error ? `<div class="notice error">${{escapeHtml(data.last_error)}}</div>` : '';
-      if (data.latest) {{
-        document.getElementById('metrics').innerHTML = cards(data.latest);
-        document.getElementById('links').innerHTML = links(data.latest);
-        document.getElementById('reportFrame').innerHTML = `<iframe src="/reports/${{encodeURIComponent(data.latest.html_report)}}"></iframe>`;
+      lastData = data;
+      const status = data.status || {{}};
+      document.getElementById('run').disabled = !!status.running;
+      document.getElementById('dot').classList.toggle('busy', !!status.running);
+      document.getElementById('statusText').textContent = status.running ? 'Running audit' : 'Ready';
+      document.getElementById('timeText').textContent = status.last_finished ? `Last finished ${{status.last_finished}}` : (status.last_started ? `Started ${{status.last_started}}` : 'No audit has run yet');
+      document.getElementById('message').innerHTML = status.last_error ? `<div class="notice error">${{escapeHtml(status.last_error)}}</div>` : '';
+      renderStats(data.latest);
+      renderScanned(data.scan_breakdown || []);
+      renderCandidates('duplicates', 'duplicateSummary', data.duplicate_candidates || [], 'duplicate');
+      renderCandidates('safe', 'safeSummary', data.safe_candidates || [], 'safe');
+      renderQuarantine(data.quarantined || {{ rows: [], empty: true, items: 0, recoverable_size: '0 B' }});
+      renderLinks(data.reports || {{}});
+    }}
+    function renderStats(x) {{
+      x = x || {{ files_scanned: 0, groups_count: 0, safe_count: 0, review_count: 0, reclaimable: '0 B' }};
+      document.getElementById('stats').innerHTML = `
+        <div class="stat"><div class="label">Scanned</div><div class="value">${{x.files_scanned}}</div></div>
+        <div class="stat"><div class="label">Duplicate Candidates</div><div class="value green">${{x.safe_count}}</div></div>
+        <div class="stat"><div class="label">Needs Review</div><div class="value amber">${{x.review_count}}</div></div>
+        <div class="stat"><div class="label">Recoverable</div><div class="value green">${{escapeHtml(x.reclaimable || '0 B')}}</div></div>`;
+    }}
+    function renderScanned(rows) {{
+      const total = rows.reduce((sum, row) => sum + Number(row.file_count || 0), 0);
+      document.getElementById('scanTotal').textContent = `${{total}} files`;
+      document.getElementById('scanned').innerHTML = rows.length ? rows.map(row => `
+        <div class="item" style="grid-template-columns:1fr;">
+          <div><div class="item-title">${{titleCase(row.location)}}: ${{row.file_count}} files</div>
+          <div class="path">${{escapeHtml(row.root || '')}} | ${{escapeHtml(row.total_size || '0 B')}}</div></div>
+        </div>`).join('') : `<div class="notice">No audit has run yet.</div>`;
+    }}
+    function renderCandidates(target, summaryTarget, rows, prefix) {{
+      document.getElementById(summaryTarget).textContent = `${{rows.length}} items`;
+      document.getElementById(target).innerHTML = rows.length ? rows.map((row, index) => `
+        <label class="item">
+          <input type="checkbox" data-kind="${{prefix}}" value="${{escapeAttr(row.path)}}">
+          <div>
+            <div class="item-title">${{escapeHtml(row.title || row.path)}}</div>
+            <div class="path">${{escapeHtml(row.path)}}</div>
+            <span class="pill">Size: ${{escapeHtml(row.size_human || 'unknown')}}</span>
+            <span class="pill">Match: ${{escapeHtml(row.match || 'review')}}</span>
+            <span class="pill">Confidence: ${{escapeHtml(row.confidence || 'Review')}}</span>
+          </div>
+        </label>`).join('') : `<div class="notice">No rows.</div>`;
+    }}
+    function renderQuarantine(q) {{
+      document.getElementById('quarantineSummary').textContent = `Empty? ${{q.empty ? 'Yes' : 'No'}} | Items: ${{q.items || 0}} | Recoverable size: ${{q.recoverable_size || '0 B'}}`;
+      const rows = q.rows || [];
+      document.getElementById('quarantined').innerHTML = rows.length ? rows.map(row => `
+        <label class="item">
+          <input type="checkbox" data-kind="quarantine" value="${{escapeAttr(row.id)}}">
+          <div>
+            <div class="item-title">${{escapeHtml(row.title || row.original_path)}}</div>
+            <div class="path">From: ${{escapeHtml(row.original_path || '')}}</div>
+            <div class="path">Now: ${{escapeHtml(row.quarantine_path || '')}}</div>
+            <span class="pill">${{escapeHtml(row.size_human || '')}}</span>
+            <span class="pill">Moved: ${{escapeHtml(row.moved_at || '')}}</span>
+          </div>
+        </label>`).join('') : `<div class="notice">Quarantine is empty.</div>`;
+    }}
+    function renderLinks(reports) {{
+      if (!reports.raw_json) {{
+        document.getElementById('links').innerHTML = `<span class="sub">Reports will appear after the first audit.</span>`;
+        return;
       }}
+      document.getElementById('links').innerHTML = `
+        <a class="link" href="/reports/${{encodeURIComponent(reports.html_report)}}" target="_blank">Open HTML</a>
+        <a class="link" href="/reports/${{encodeURIComponent(reports.summary_csv)}}">Summary CSV</a>
+        <a class="link" href="/reports/${{encodeURIComponent(reports.details_csv)}}">Details CSV</a>
+        <a class="link" href="/reports/${{encodeURIComponent(reports.raw_json)}}">Raw JSON</a>`;
     }}
-    function cards(x) {{
-      return `
-        <div class="metric"><div class="label">Scanned</div><div class="value">${{x.files_scanned}}</div></div>
-        <div class="metric"><div class="label">Matched Groups</div><div class="value">${{x.groups_count}}</div></div>
-        <div class="metric"><div class="label">Safe Candidates</div><div class="value green">${{x.safe_count}}</div></div>
-        <div class="metric"><div class="label">Review Items</div><div class="value amber">${{x.review_count}}</div></div>
-        <div class="metric"><div class="label">Reclaimable</div><div class="value green">${{x.reclaimable}}</div></div>`;
+    async function quarantineSelected(kind) {{
+      const paths = selected(kind);
+      if (!paths.length) return showMessage('Select at least one item first.', false);
+      await postAction('/quarantine', {{ paths }});
     }}
-    function links(x) {{
-      return `<div class="links">
-        <a class="link" href="/reports/${{encodeURIComponent(x.html_report)}}" target="_blank">Open HTML</a>
-        <a class="link" href="/reports/${{encodeURIComponent(x.summary_csv)}}">Summary CSV</a>
-        <a class="link" href="/reports/${{encodeURIComponent(x.details_csv)}}">Details CSV</a>
-        <a class="link" href="/reports/${{encodeURIComponent(x.raw_json)}}">Raw JSON</a>
-      </div>`;
+    async function restoreSelected() {{
+      const ids = selected('quarantine');
+      if (!ids.length) return showMessage('Select at least one quarantined item first.', false);
+      await postAction('/restore', {{ ids }});
+    }}
+    async function deleteSelected() {{
+      const ids = selected('quarantine');
+      if (!ids.length) return showMessage('Select at least one quarantined item first.', false);
+      const confirmation = prompt(`Type DELETE to permanently remove ${{ids.length}} files.`);
+      if (confirmation !== 'DELETE') return showMessage('Permanent delete cancelled.', false);
+      await postAction('/delete', {{ ids, confirmation }});
+    }}
+    async function postAction(url, payload) {{
+      const res = await fetch(url, {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(payload) }});
+      const data = await res.json();
+      if (data.errors && data.errors.length) showMessage(data.errors.map(e => e.error || JSON.stringify(e)).join(' | '), true);
+      else showMessage('Done.', false);
+      await poll();
+    }}
+    function selected(kind) {{
+      return Array.from(document.querySelectorAll(`input[data-kind="${{kind}}"]:checked`)).map(input => input.value);
+    }}
+    function reviewCard(id) {{ document.getElementById(id).scrollIntoView({{ behavior: 'smooth', block: 'start' }}); }}
+    function scrollToCard(id) {{ document.getElementById(id).scrollIntoView({{ behavior: 'smooth', block: 'start' }}); }}
+    function showMessage(text, error) {{
+      document.getElementById('message').innerHTML = `<div class="notice ${{error ? 'error' : ''}}">${{escapeHtml(text)}}</div>`;
     }}
     function escapeHtml(s) {{
-      return s.replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
+      return String(s || '').replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
     }}
-    if (running) poll();
+    function escapeAttr(s) {{ return escapeHtml(s).replace(/`/g, '&#96;'); }}
+    function titleCase(s) {{ return String(s || '').replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase()); }}
+    poll();
+    if (running) setTimeout(poll, 1500);
   </script>
 </body>
 </html>"""
