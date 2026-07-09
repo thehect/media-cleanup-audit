@@ -9,6 +9,7 @@ from media_cleanup_audit import (
     classify_groups,
     canonicalize_path,
     classify_unmatched,
+    dashboard_candidate_rows,
     delete_quarantined,
     download_cleanup_rows,
     gather_episode_candidates,
@@ -249,6 +250,23 @@ class MediaCleanupAuditTests(unittest.TestCase):
         cards = library_health_cards([{"location": "downloads", "file_count": 3314, "total_size": "7.1 TB"}])
         downloads = [card for card in cards if card["location"] == "downloads"][0]
         self.assertTrue(downloads["attention"])
+
+    def test_dashboard_duplicate_candidates_include_keeper_compare_data(self):
+        rows = dashboard_candidate_rows(
+            [
+                {
+                    "path": "/data/downloads/Arrival.1080p.mkv",
+                    "title": "Arrival",
+                    "size_human": "4.2 GB",
+                    "keeper": "/data/movies/Arrival/Arrival.720p.mkv",
+                    "keeper_size_human": "1.4 GB",
+                    "recommendation": "safe_cleanup_candidate",
+                    "kind": "movie",
+                }
+            ]
+        )
+        self.assertEqual(rows[0]["keeper"], "/data/movies/Arrival/Arrival.720p.mkv")
+        self.assertEqual(rows[0]["keeper_size_human"], "1.4 GB")
 
 
 if __name__ == "__main__":

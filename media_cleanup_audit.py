@@ -1187,6 +1187,9 @@ def dashboard_candidate_rows(rows: list[dict[str, Any]], limit: int = 250) -> li
                 "title": row.get("title", "") or row.get("parsed_id", "") or row.get("path", ""),
                 "size_human": row.get("size_human", ""),
                 "size": row.get("size", 0),
+                "keeper": row.get("keeper", ""),
+                "keeper_size": row.get("keeper_size", ""),
+                "keeper_size_human": row.get("keeper_size_human", ""),
                 "kind": row.get("kind", ""),
                 "match": "same title / same library item / larger duplicate"
                 if row.get("recommendation") == "safe_cleanup_candidate"
@@ -1648,6 +1651,10 @@ def render_dashboard(state: DashboardState) -> str:
     .list {{ display: grid; gap: 8px; max-height: 440px; overflow: auto; padding-right: 2px; }}
     .item {{ display: grid; grid-template-columns: 28px 1fr; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; }}
     .item-title {{ font-weight: 850; overflow-wrap: anywhere; }}
+    .compare {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }}
+    .compare-box {{ border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fbfcfe; min-width: 0; }}
+    .compare-box.quarantine {{ border-color: #fecdca; background: #fffbfa; }}
+    .compare-box.keep {{ border-color: #abefc6; background: #f6fef9; }}
     .path {{ color: var(--muted); font-size: 12px; overflow-wrap: anywhere; margin-top: 4px; }}
     .pill {{ display: inline-flex; border-radius: 999px; background: var(--soft); color: var(--blue); font-size: 12px; font-weight: 850; padding: 3px 8px; margin-right: 6px; margin-top: 8px; }}
     .pill.high {{ background: #ecfdf3; color: var(--green); }}
@@ -1657,7 +1664,7 @@ def render_dashboard(state: DashboardState) -> str:
     .dot {{ width: 10px; height: 10px; border-radius: 999px; background: var(--green); display: inline-block; margin-right: 8px; }}
     .busy {{ background: var(--amber); animation: pulse 1s infinite; }}
     @keyframes pulse {{ 0%, 100% {{ opacity: .35 }} 50% {{ opacity: 1 }} }}
-    @media (max-width: 900px) {{ main {{ padding: 16px; }} header {{ flex-direction: column; align-items: stretch; }} .layout, .stats {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 900px) {{ main {{ padding: 16px; }} header {{ flex-direction: column; align-items: stretch; }} .layout, .stats, .compare {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
@@ -1789,12 +1796,26 @@ def render_dashboard(state: DashboardState) -> str:
           <input type="checkbox" data-kind="${{prefix}}" value="${{escapeAttr(row.path)}}">
           <div>
             <div class="item-title">${{escapeHtml(row.title || row.path)}}</div>
-            <div class="path">${{escapeHtml(row.path)}}</div>
+            ${{row.keeper ? compareHtml(row) : `<div class="path">${{escapeHtml(row.path)}}</div>`}}
             <span class="pill">Size: ${{escapeHtml(row.size_human || 'unknown')}}</span>
             <span class="pill">Match: ${{escapeHtml(row.match || 'review')}}</span>
             <span class="pill">Confidence: ${{escapeHtml(row.confidence || 'Review')}}</span>
           </div>
         </label>`).join('') : `<div class="notice">No rows.</div>`;
+    }}
+    function compareHtml(row) {{
+      return `<div class="compare">
+        <div class="compare-box quarantine">
+          <div class="label">Quarantine This</div>
+          <div class="item-title">${{escapeHtml(row.size_human || 'unknown')}}</div>
+          <div class="path">${{escapeHtml(row.path || '')}}</div>
+        </div>
+        <div class="compare-box keep">
+          <div class="label">Keep This</div>
+          <div class="item-title">${{escapeHtml(row.keeper_size_human || 'unknown')}}</div>
+          <div class="path">${{escapeHtml(row.keeper || '')}}</div>
+        </div>
+      </div>`;
     }}
     function renderDownloads(rows, summary) {{
       document.getElementById('downloadSummary').textContent =

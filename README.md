@@ -59,6 +59,10 @@ Downloads are grouped into review buckets:
 
 With qBittorrent disabled, the app cannot know whether a download is still seeding. Keep using quarantine first, then permanently delete only after verification.
 
+## Side-By-Side Duplicate Review
+
+Duplicate candidates show a compare view before quarantine: `Quarantine This` on one side and `Keep This` on the other. Use it to verify the larger file being moved and the smaller/imported file that will remain.
+
 ## Quick Start
 
 1. Clone this repo onto your media server.
