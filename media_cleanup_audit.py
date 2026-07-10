@@ -7,20 +7,25 @@ import argparse
 import csv
 import dataclasses
 import errno
+import hashlib
+import hmac
 import html
 import mimetypes
 import json
 import os
 import posixpath
 import re
+import secrets
 import shutil
 import socket
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import defaultdict
 from datetime import datetime
@@ -115,6 +120,8 @@ class DashboardState:
     action_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     action_id: int = 0
     action_status: dict[str, Any] = dataclasses.field(default_factory=dict)
+    dashboard_password: str = ""
+    auth_secret: bytes = dataclasses.field(default_factory=lambda: secrets.token_bytes(32))
 
 
 def log(message: str) -> None:
@@ -1664,13 +1671,75 @@ def delete_quarantined(state: DashboardState, ids: list[str], confirmation: str,
     return {"deleted": deleted, "errors": errors, "quarantined": quarantine_inventory(config)}
 
 
+AUTH_COOKIE_NAME = "mediacleanup_session"
+AUTH_SESSION_SECONDS = 12 * 60 * 60
+
+
+def dashboard_password(config: dict[str, Any]) -> str:
+    return str(config.get("dashboard", {}).get("password", "") or "")
+
+
+def issue_dashboard_session(state: DashboardState) -> str:
+    expires = int(time.time()) + AUTH_SESSION_SECONDS
+    password_fingerprint = hashlib.sha256(state.dashboard_password.encode("utf-8")).hexdigest()[:16]
+    message = f"{expires}:{password_fingerprint}"
+    signature = hmac.new(state.auth_secret, message.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{message}:{signature}"
+
+
+def valid_dashboard_session(state: DashboardState, cookie_header: str) -> bool:
+    if not state.dashboard_password:
+        return True
+    try:
+        cookies = SimpleCookie()
+        cookies.load(cookie_header)
+        token = cookies[AUTH_COOKIE_NAME].value
+        expires_text, fingerprint, signature = token.split(":", 2)
+        expires = int(expires_text)
+    except (KeyError, ValueError):
+        return False
+    if expires < int(time.time()):
+        return False
+    expected_fingerprint = hashlib.sha256(state.dashboard_password.encode("utf-8")).hexdigest()[:16]
+    if not hmac.compare_digest(fingerprint, expected_fingerprint):
+        return False
+    message = f"{expires}:{fingerprint}"
+    expected_signature = hmac.new(state.auth_secret, message.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected_signature)
+
+
+def render_login_page(error: str = "") -> str:
+    error_html = f'<div class="error" role="alert">{html.escape(error)}</div>' if error else ""
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Media Cleanup</title>
+<style>
+:root {{ color-scheme: light; }} * {{ box-sizing: border-box; }} body {{ min-width:320px; margin:0; min-height:100vh; display:grid; place-items:center; padding:20px; background:#f5f6f8; color:#16181b; font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }}
+main {{ width:min(100%,390px); }} .mark {{ width:36px; height:36px; display:grid; place-items:center; border-radius:7px; background:#151719; color:#fff; font-size:12px; font-weight:800; }} h1 {{ margin:18px 0 6px; font-size:26px; }} p {{ margin:0 0 24px; color:#69707d; line-height:1.5; }} label {{ display:block; margin-bottom:8px; font-weight:700; }} input {{ width:100%; min-height:48px; border:1px solid #cfd4da; border-radius:7px; padding:11px 12px; font:inherit; }} button {{ width:100%; min-height:48px; margin-top:14px; border:1px solid #1769e0; border-radius:7px; background:#1769e0; color:#fff; font:inherit; font-weight:800; cursor:pointer; }} .error {{ margin-bottom:14px; padding:10px 12px; border:1px solid #f1b9b4; border-radius:7px; background:#fff1f0; color:#a52822; font-size:14px; }}
+</style></head><body><main><div class="mark">MC</div><h1>Media Cleanup</h1><p>Enter the dashboard password to continue.</p>{error_html}<form id="login"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus><button type="submit">Unlock</button></form></main>
+<script>document.getElementById('login').addEventListener('submit',async(event)=>{{event.preventDefault();const password=document.getElementById('password').value;const response=await fetch('/auth/login',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{password}})}});if(response.ok){{location.replace('/');return;}}location.replace('/login?error=1');}});</script></body></html>"""
+
+
 def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: int) -> None:
     state = DashboardState(config_path=config_path, output_dir=Path(output_dir))
+    state.dashboard_password = dashboard_password(load_config(config_path))
     state.output_dir.mkdir(parents=True, exist_ok=True)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == "/login":
+                if self.is_authorized():
+                    self.redirect("/")
+                else:
+                    query = urllib.parse.parse_qs(parsed.query)
+                    self.send_html(render_login_page("Incorrect password. Try again." if query.get("error") else ""))
+                return
+            if parsed.path == "/auth/logout":
+                self.expire_session()
+                return
+            if not self.is_authorized():
+                self.reject_unauthorized(parsed.path)
+                return
             if parsed.path == "/":
                 self.send_html(render_dashboard(state))
                 return
@@ -1696,6 +1765,17 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
 
         def do_POST(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == "/auth/login":
+                payload = self.read_json_body()
+                submitted = str(payload.get("password", ""))
+                if not state.dashboard_password or hmac.compare_digest(submitted, state.dashboard_password):
+                    self.send_json({"ok": True}, headers={"Set-Cookie": self.session_cookie()})
+                else:
+                    self.send_json({"error": "incorrect password"}, status=401)
+                return
+            if not self.is_authorized():
+                self.reject_unauthorized(parsed.path)
+                return
             if parsed.path == "/run":
                 started = start_dashboard_audit(state)
                 self.send_json({"started": started, **render_status(state)})
@@ -1725,13 +1805,38 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
             self.end_headers()
             self.wfile.write(encoded)
 
-        def send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+        def send_json(self, payload: dict[str, Any], status: int = 200, headers: dict[str, str] | None = None) -> None:
             encoded = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(encoded)
+
+        def is_authorized(self) -> bool:
+            return valid_dashboard_session(state, self.headers.get("Cookie", ""))
+
+        def session_cookie(self) -> str:
+            return f"{AUTH_COOKIE_NAME}={issue_dashboard_session(state)}; Path=/; HttpOnly; SameSite=Strict; Max-Age={AUTH_SESSION_SECONDS}"
+
+        def expire_session(self) -> None:
+            self.send_response(302)
+            self.send_header("Set-Cookie", f"{AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+            self.send_header("Location", "/login")
+            self.end_headers()
+
+        def redirect(self, location: str) -> None:
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.end_headers()
+
+        def reject_unauthorized(self, path: str) -> None:
+            if path in {"/status", "/action-status", "/data"} or path.startswith("/reports/"):
+                self.send_json({"error": "dashboard password required"}, status=401)
+            else:
+                self.redirect("/login")
 
         def send_report_file(self, name: str) -> None:
             safe_name = Path(urllib.parse.unquote(name)).name
@@ -2260,6 +2365,7 @@ def render_dashboard(state: DashboardState) -> str:
     page = template_path.read_text(encoding="utf-8")
     return (
         page.replace("__RUNNING__", "true" if state.running else "false")
+        .replace("__LOCK_HIDDEN__", "" if state.dashboard_password else "auth-disabled")
         .replace("__BUSY_CLASS__", "busy" if state.running else "")
         .replace("__STATUS_TEXT__", "Running audit" if state.running else "Ready")
         .replace("__TIME_TEXT__", html.escape(render_time_text(state)))

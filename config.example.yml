@@ -10,6 +10,11 @@ media_roots:
 quarantine:
   local_fast_path: true
 
+# Optional single-password lock for the web dashboard. Keep the actual value
+# in .env as DASHBOARD_PASSWORD, never in this file or in Git.
+dashboard:
+  password: ${DASHBOARD_PASSWORD}
+
 # Optional aliases for stacks where apps see the same folders at different paths.
 # Example:
 # path_mappings:

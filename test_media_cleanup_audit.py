@@ -28,11 +28,13 @@ from media_cleanup_audit import (
     validate_config,
     fetch_jellyfin_user_id,
     fetch_sonarr,
+    issue_dashboard_session,
     library_index_rows,
     move_file,
     quarantine_destination,
     scan_video_files,
     start_dashboard_action,
+    valid_dashboard_session,
 )
 
 
@@ -156,6 +158,15 @@ class MediaCleanupAuditTests(unittest.TestCase):
         self.assertIn("downloadBrief", body)
         self.assertIn("Select matches", body)
         self.assertIn("actionProgress", body)
+        self.assertIn("auth/logout", body)
+
+    def test_dashboard_password_session_requires_the_current_password(self):
+        state = DashboardState(config_path="/app/config.yml", output_dir=Path("/reports"), dashboard_password="long-password")
+        token = issue_dashboard_session(state)
+        self.assertTrue(valid_dashboard_session(state, f"mediacleanup_session={token}"))
+        self.assertFalse(valid_dashboard_session(state, "mediacleanup_session=not-a-session"))
+        state.dashboard_password = "changed-password"
+        self.assertFalse(valid_dashboard_session(state, f"mediacleanup_session={token}"))
 
     def test_dashboard_status_includes_latest_report_names(self):
         result = AuditResult(

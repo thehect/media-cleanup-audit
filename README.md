@@ -71,7 +71,24 @@ Duplicate candidates and exact download/library matches show a compare view befo
 
 ## Mobile Use
 
-The dashboard is responsive for phone review through a tunnel. On small screens it switches to touch-friendly cards, larger checkboxes, sticky top controls, a bottom navigation bar for Overview, Downloads, Duplicates, Library, and Quarantine, and compact side-by-side compare panels.
+The dashboard is responsive for phone review through a tunnel. On small screens it switches to touch-friendly cards, larger checkboxes, a bottom navigation bar for Overview, Downloads, Duplicates, Library, and Quarantine, compact side-by-side compare panels, and a persistent bottom action bar whenever files are selected.
+
+## Dashboard Password
+
+To protect a tunneled dashboard with one password, add this to `.env`:
+
+```bash
+DASHBOARD_PASSWORD=use-a-long-unique-password-here
+```
+
+Then add this to `config.yml`:
+
+```yaml
+dashboard:
+  password: ${DASHBOARD_PASSWORD}
+```
+
+Rebuild the container after both changes. The password gates the dashboard, reports, scans, quarantine moves, restores, and permanent deletes. Sessions expire after 12 hours or immediately when you use the `Lock` button. Leave the value blank only for a dashboard that is not exposed outside your home network.
 
 ## Quick Start
 

@@ -23,6 +23,7 @@ services:
       SONARR_API_KEY: ${SONARR_API_KEY:-}
       QBIT_USER: ${QBIT_USER:-}
       QBIT_PASS: ${QBIT_PASS:-}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
     command: ["--serve", "--config", "/app/config.yml", "--output-dir", "/reports", "--port", "6996"]
 
 networks:

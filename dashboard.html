@@ -28,7 +28,7 @@
       <header class="topbar">
         <div class="mobile-brand">Media Cleanup</div>
         <div class="top-status"><span id="topStatus">__STATUS_TEXT__</span> <span aria-hidden="true">&middot;</span> <span id="topTime">__TIME_TEXT__</span></div>
-        <div class="top-actions"><button id="run" class="primary" onclick="runAudit()">Run audit</button></div>
+        <div class="top-actions"><button class="lock-button __LOCK_HIDDEN__" onclick="location.href='/auth/logout'">Lock</button><button id="run" class="primary" onclick="runAudit()">Run audit</button></div>
       </header>
       <div class="action-progress" id="actionProgress" role="status" aria-live="polite">
         <div><strong id="actionProgressTitle">Working</strong><span id="actionProgressText">Updating files...</span></div>
