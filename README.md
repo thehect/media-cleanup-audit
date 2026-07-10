@@ -125,17 +125,17 @@ To enable quarantine moves after you have reviewed the audit results, add this t
 
 ```bash
 MEDIA_MOUNT_MODE=rw
-QUARANTINE_ROOT=/mnt/MediaCleanupQuarantine
+QUARANTINE_ROOT=/mnt/Movies/.mediacleanup-control
 ```
 
-For fast quarantine, also add this to `config.yml`:
+Fast quarantine is on by default. Keep this in `config.yml` to make that choice explicit:
 
 ```yaml
 quarantine:
   local_fast_path: true
 ```
 
-This keeps each quarantined file in a hidden `.mediacleanup-quarantine` folder on the same storage as its source. On a NAS this is normally an instant rename instead of a multi-gigabyte network copy. These folders are excluded from future audits, while the dashboard still tracks every item in its normal quarantine list.
+This keeps each quarantined file in a hidden `.mediacleanup-quarantine` folder on the same storage as its source. On a NAS this is normally an instant rename instead of a multi-gigabyte network copy. These folders are excluded from future audits, while the dashboard still tracks every item in its normal quarantine list. `QUARANTINE_ROOT` is required and must be on the NAS; it stores the small quarantine manifest and prevents Docker from silently using local server storage.
 
 Then rebuild:
 

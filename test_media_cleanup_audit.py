@@ -352,6 +352,18 @@ class MediaCleanupAuditTests(unittest.TestCase):
             self.assertFalse(source.exists())
             self.assertEqual(destination.read_bytes(), b"media")
 
+    def test_quarantine_defaults_to_the_source_filesystem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            downloads = root / "downloads"
+            source = downloads / "movie.mkv"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"media")
+            config = {"media_roots": {"downloads": downloads.as_posix(), "erase_later": (root / "local-server").as_posix()}}
+            destination_root, source_root = quarantine_destination(config, source)
+            self.assertEqual(destination_root, downloads / ".mediacleanup-quarantine")
+            self.assertEqual(source_root, downloads)
+
     def test_fast_local_quarantine_is_not_scanned_again(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -361,11 +373,7 @@ class MediaCleanupAuditTests(unittest.TestCase):
             held = downloads / ".mediacleanup-quarantine" / "batch" / "held.mkv"
             held.parent.mkdir(parents=True)
             held.write_bytes(b"held")
-            config = {
-                "media_roots": {"downloads": downloads.as_posix()},
-                "scan": {"roots": [downloads.as_posix()]},
-                "quarantine": {"local_fast_path": True},
-            }
+            config = {"media_roots": {"downloads": downloads.as_posix()}, "scan": {"roots": [downloads.as_posix()]}}
             scanned = scan_video_files(config)
             self.assertEqual([Path(item.path).name for item in scanned.files], ["normal.mkv"])
 

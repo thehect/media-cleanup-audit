@@ -4,9 +4,10 @@ media_roots:
   downloads: /data/downloads
   erase_later: /data/_erase_later
 
-# Set this to true for near-instant quarantine moves. Files are placed in a
-# hidden .mediacleanup-quarantine folder beside their current library, so the
-# NAS can rename them without copying the entire video first.
+# Fast local quarantine is on by default. Files are placed in a hidden
+# .mediacleanup-quarantine folder beside their current library, so the NAS can
+# rename them without copying the entire video first. Do not disable this when
+# the dashboard runs on a separate server from your storage.
 quarantine:
   local_fast_path: true
 

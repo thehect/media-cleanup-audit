@@ -7,7 +7,7 @@ services:
     volumes:
       - ./config.yml:/app/config.yml:ro
       - ./reports:/reports
-      - ${QUARANTINE_ROOT:-./quarantine}:/data/_erase_later
+      - ${QUARANTINE_ROOT:?Set QUARANTINE_ROOT to a folder on your NAS}:/data/_erase_later
       - ${MOVIES_ROOT:-/mnt/Movies}:/data/movies:${MEDIA_MOUNT_MODE:-ro}
       - ${TVSHOWS_ROOT:-/mnt/TvShows}:/data/tvshows:${MEDIA_MOUNT_MODE:-ro}
       - ${ANIME_ROOT:-/mnt/Anime}:/data/anime:${MEDIA_MOUNT_MODE:-ro}

@@ -515,7 +515,7 @@ def scan_video_files(config: dict[str, Any]) -> ScanResult:
 def is_local_quarantine_path(config: dict[str, Any], path: Path) -> bool:
     """Keep fast local quarantine folders out of future audits."""
     quarantine = config.get("quarantine", {})
-    if not quarantine.get("local_fast_path", False):
+    if not quarantine.get("local_fast_path", True):
         return False
     return ".mediacleanup-quarantine" in path.parts
 
@@ -1413,9 +1413,9 @@ def quarantine_root(config: dict[str, Any]) -> Path:
 
 
 def quarantine_destination(config: dict[str, Any], source: Path) -> tuple[Path, Path]:
-    """Choose a fast same-filesystem quarantine root when it is enabled."""
+    """Keep quarantine on the source filesystem unless explicitly overridden."""
     quarantine = config.get("quarantine", {})
-    if not quarantine.get("local_fast_path", False):
+    if not quarantine.get("local_fast_path", True):
         return quarantine_root(config), Path(source.anchor) if source.anchor else Path("/")
 
     candidates: list[Path] = []
@@ -1430,7 +1430,7 @@ def quarantine_destination(config: dict[str, Any], source: Path) -> tuple[Path, 
             continue
         candidates.append(candidate)
     if not candidates:
-        return quarantine_root(config), Path(source.anchor) if source.anchor else Path("/")
+        return source.parent / ".mediacleanup-quarantine", source.parent
 
     source_root = max(candidates, key=lambda item: len(item.parts))
     return source_root / ".mediacleanup-quarantine", source_root
