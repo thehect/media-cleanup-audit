@@ -1209,20 +1209,25 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
     raw = latest_raw_payload(state)
     latest = result_payload(state.last_result) if state.last_result else raw_result_payload(raw)
     details = raw.get("details", []) if raw else []
+    config = load_config(state.config_path)
     duplicate_rows = [
         row for row in details
-        if row.get("recommendation") == "safe_cleanup_candidate" and row.get("kind") in {"movie", "episode"}
+        if dashboard_path_is_live(config, row)
+        and row.get("recommendation") == "safe_cleanup_candidate"
+        and row.get("kind") in {"movie", "episode"}
     ]
     library_review_rows = [
         row for row in details
-        if row.get("kind") in {"unmatched", "inaccessible"}
+        if dashboard_path_is_live(config, row)
+        and row.get("kind") in {"unmatched", "inaccessible"}
         and row.get("location") in {"movies", "tv", "anime"}
     ]
     download_rows = [
         row for row in details
-        if row.get("kind") == "unmatched" and row.get("location") == "downloads"
+        if dashboard_path_is_live(config, row)
+        and row.get("kind") == "unmatched"
+        and row.get("location") == "downloads"
     ]
-    config = load_config(state.config_path)
     quarantined = quarantine_inventory(config)
     library_index = raw.get("library_index", []) if raw else []
     qbit_configured = bool(config.get("qbittorrent", {}).get("enabled", False))
@@ -1253,6 +1258,19 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
         },
         "reports": report_names(raw, state),
     }
+
+
+def dashboard_path_is_live(config: dict[str, Any], row: dict[str, Any]) -> bool:
+    path_text = str(row.get("path", "") or "")
+    if not path_text:
+        return False
+    path = Path(path_text)
+    if is_local_quarantine_path(config, path):
+        return False
+    try:
+        return path.is_file()
+    except OSError:
+        return False
 
 
 def storage_volume_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1612,8 +1630,13 @@ def quarantine_inventory(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def latest_detail_map(state: DashboardState) -> dict[str, dict[str, Any]]:
+    config = load_config(state.config_path)
     raw = latest_raw_payload(state) or {}
-    return {str(row.get("path", "")): row for row in raw.get("details", []) if row.get("path")}
+    return {
+        str(row.get("path", "")): row
+        for row in raw.get("details", [])
+        if dashboard_path_is_live(config, row)
+    }
 
 
 def quarantine_selected(state: DashboardState, paths: list[str], progress: Callable[..., None] | None = None) -> dict[str, Any]:
@@ -1630,7 +1653,7 @@ def quarantine_selected(state: DashboardState, paths: list[str], progress: Calla
             progress(index - 1, total, f"Checking {Path(path_text).name}")
         row = allowed.get(path_text)
         if not row:
-            errors.append({"path": path_text, "error": "not found in latest audit details"})
+            errors.append({"path": path_text, "error": "file is no longer available for quarantine"})
             if progress:
                 progress(index, total, f"Skipped {Path(path_text).name}")
             continue

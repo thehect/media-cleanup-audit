@@ -15,6 +15,7 @@ from media_cleanup_audit import (
     canonicalize_path,
     classify_unmatched,
     dashboard_candidate_rows,
+    dashboard_path_is_live,
     delete_quarantined,
     download_cleanup_rows,
     gather_episode_candidates,
@@ -397,6 +398,21 @@ class MediaCleanupAuditTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["label"], "Movies / Downloads")
             self.assertGreater(rows[0]["total"], 0)
+
+    def test_dashboard_hides_stale_and_quarantined_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            downloads = root / "downloads"
+            live = downloads / "live.mkv"
+            held = downloads / ".mediacleanup-quarantine" / "batch" / "held.mkv"
+            live.parent.mkdir(parents=True)
+            held.parent.mkdir(parents=True)
+            live.write_bytes(b"live")
+            held.write_bytes(b"held")
+            config = {"quarantine": {"local_fast_path": True}}
+            self.assertTrue(dashboard_path_is_live(config, {"path": live.as_posix()}))
+            self.assertFalse(dashboard_path_is_live(config, {"path": held.as_posix()}))
+            self.assertFalse(dashboard_path_is_live(config, {"path": (downloads / "missing.mkv").as_posix()}))
 
     def test_qbittorrent_failure_does_not_abort_audit(self):
         with tempfile.TemporaryDirectory() as tmp:

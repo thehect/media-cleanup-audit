@@ -656,7 +656,7 @@ async function postAction(url, payload, successText, options = {}) {
     const result = status.result || {};
     applyOptimisticUpdate(updateFromActionResult(options.optimistic, result));
     if (result.errors && result.errors.length) {
-      showMessage(result.errors.map((error) => error.error || JSON.stringify(error)).join(" · "), true);
+      showMessage(formatActionErrors(result.errors), true);
     } else {
       showMessage(successText || "Done.", false);
     }
@@ -666,6 +666,12 @@ async function postAction(url, payload, successText, options = {}) {
   } finally {
     setActionProgress(false, "Done", "Refreshing...", 100);
   }
+}
+
+function formatActionErrors(errors) {
+  const messages = errors.map((error) => error.error || JSON.stringify(error));
+  const shown = messages.slice(0, 3).join(" · ");
+  return messages.length > 3 ? `${shown} · ${messages.length - 3} additional files were skipped.` : shown;
 }
 
 async function waitForAction(actionId, options = {}) {
