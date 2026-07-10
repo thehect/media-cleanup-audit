@@ -506,8 +506,20 @@ function selectVisible(kind) {
   rerenderKind(kind);
 }
 
+function selectFiltered(kind) {
+  const rows = filteredRows(kind);
+  if (!rows.length) return showMessage("There are no files in this view to select.", false);
+  const key = kind === "quarantine" ? "id" : "path";
+  const allSelected = rows.every((row) => selections[kind].has(String(row[key])));
+  rows.forEach((row) => {
+    if (allSelected) selections[kind].delete(String(row[key]));
+    else selections[kind].add(String(row[key]));
+  });
+  rerenderKind(kind);
+}
+
 function selectRecommended(kind) {
-  const rows = visibleRows(kind, filteredRows(kind));
+  const rows = filteredRows(kind);
   const key = kind === "quarantine" ? "id" : "path";
   const recommended = rows.filter((row) => {
     if (kind === "download") return row.confidence === "High";
@@ -547,7 +559,8 @@ function renderSelectionBar(kind) {
     ? `<button onclick="restoreSelected()">Restore</button><button class="danger" onclick="requestDelete()">Delete permanently</button>`
     : `<button class="primary" onclick="requestQuarantine('${kind}')">Review move</button>`;
   const visibleCount = visibleRows(kind, filteredRows(kind)).length;
-  target.innerHTML = `<div><strong>${rows.length} selected</strong><div class="sub">${humanSize(total)} - visible batch: ${visibleCount}</div></div><div class="selection-actions"><button onclick="clearSelection('${kind}')">Clear</button>${actions}</div>`;
+  const matchingView = filteredRows(kind).filter((row) => values.has(String(kind === "quarantine" ? row.id : row.path))).length;
+  target.innerHTML = `<div><strong>${rows.length} selected</strong><div class="sub">${humanSize(total)} - ${matchingView} in this view, ${visibleCount} shown</div></div><div class="selection-actions"><button onclick="clearSelection('${kind}')">Clear</button>${actions}</div>`;
 }
 
 function requestQuarantine(kind) {

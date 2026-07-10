@@ -162,6 +162,7 @@ class MediaCleanupAuditTests(unittest.TestCase):
         self.assertIn("Library review", body)
         self.assertIn("downloadBrief", body)
         self.assertIn("Select matches", body)
+        self.assertIn("Select all filtered", body)
         self.assertIn("actionProgress", body)
         self.assertIn("auth/logout", body)
 

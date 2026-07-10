@@ -104,6 +104,7 @@
                 <option value="name">Name</option>
               </select>
               <button onclick="selectRecommended('download')">Select matches</button>
+              <button onclick="selectFiltered('download')">Select all filtered</button>
               <button onclick="selectVisible('download')">Select shown</button>
             </div>
           </div>
@@ -126,6 +127,7 @@
             <div class="toolbar-right">
               <input class="search" type="search" placeholder="Search duplicates" aria-label="Search duplicates" oninput="setSearch('duplicate',this.value)">
               <select aria-label="Sort duplicates" onchange="setSort('duplicate',this.value)"><option value="largest">Largest</option><option value="name">Name</option></select>
+              <button onclick="selectFiltered('duplicate')">Select all filtered</button>
               <button onclick="selectVisible('duplicate')">Select shown</button>
             </div>
           </div>
@@ -149,6 +151,7 @@
             <div class="toolbar-right">
               <input class="search" type="search" placeholder="Search library files" aria-label="Search library files" oninput="setSearch('library',this.value)">
               <select aria-label="Sort library review" onchange="setSort('library',this.value)"><option value="largest">Largest</option><option value="name">Name</option></select>
+              <button onclick="selectFiltered('library')">Select all filtered</button>
               <button onclick="selectVisible('library')">Select shown</button>
             </div>
           </div>
@@ -166,6 +169,7 @@
             <div></div>
             <div class="toolbar-right">
               <input class="search" type="search" placeholder="Search quarantine" aria-label="Search quarantine" oninput="setSearch('quarantine',this.value)">
+              <button onclick="selectFiltered('quarantine')">Select all filtered</button>
               <button onclick="selectVisible('quarantine')">Select shown</button>
             </div>
           </div>
