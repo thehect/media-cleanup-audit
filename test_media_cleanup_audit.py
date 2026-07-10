@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from media_cleanup_audit import (
     AuditResult,
@@ -35,6 +36,7 @@ from media_cleanup_audit import (
     quarantine_storage_status,
     scan_video_files,
     start_dashboard_action,
+    run_audit,
     valid_dashboard_session,
 )
 
@@ -382,6 +384,39 @@ class MediaCleanupAuditTests(unittest.TestCase):
             )
             self.assertFalse(status["ready"])
             self.assertIn("off", status["message"])
+
+    def test_qbittorrent_failure_does_not_abort_audit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config.yml"
+            config.write_text(
+                "\n".join(
+                    [
+                        "media_roots:",
+                        f"  downloads: {root.as_posix()}",
+                        "scan:",
+                        "  roots:",
+                        f"    - {root.as_posix()}",
+                        "jellyfin:",
+                        "  enabled: false",
+                        "radarr:",
+                        "  enabled: false",
+                        "sonarr:",
+                        "  enabled: false",
+                        "qbittorrent:",
+                        "  enabled: true",
+                        "  url: http://qbittorrent:8080",
+                        "  username: user",
+                        "  password: pass",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch("media_cleanup_audit.fetch_qbit_paths", side_effect=RuntimeError("login failed")):
+                result = run_audit(str(config), root / "reports")
+            raw = json.loads(result.raw_json.read_text(encoding="utf-8"))
+            self.assertFalse(raw["qbittorrent_status"]["available"])
+            self.assertIn("login failed", raw["qbittorrent_status"]["error"])
 
     def test_fast_local_quarantine_is_not_scanned_again(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1095,7 +1095,17 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
     radarr = fetch_radarr(config)
     sonarr = fetch_sonarr(config)
     jellyfin_paths, jellyfin_raw_paths = fetch_jellyfin_paths(config)
-    qbit_paths = fetch_qbit_paths(config)
+    qbit_configured = bool(config.get("qbittorrent", {}).get("enabled", True))
+    qbit_status = {"configured": qbit_configured, "available": False, "error": ""}
+    try:
+        qbit_paths = fetch_qbit_paths(config)
+        qbit_status["available"] = qbit_configured
+    except Exception as exc:
+        # qBittorrent is an optional safety signal. Continue in review-first mode
+        # when its web API is unavailable rather than blocking the whole audit.
+        qbit_paths = set()
+        qbit_status["error"] = str(exc)
+        log(f"Warning: qBittorrent protection is unavailable: {exc}")
     scan_result = scan_video_files(config)
     files = annotate_files(scan_result.files, jellyfin_paths, qbit_paths)
     groups, unmatched = build_groups(config, files, radarr, sonarr)
@@ -1107,6 +1117,8 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
     detail_rows.extend(unmatched_detail_rows)
     detail_rows.extend(scan_error_rows(scan_result.errors))
     diagnostics = diagnostic_rows(config, files, radarr, sonarr, jellyfin_raw_paths, jellyfin_paths, qbit_paths)
+    if qbit_status["error"]:
+        diagnostics.append({"source": "qbittorrent", "raw_path": "", "mapped_path": "", "warning": qbit_status["error"]})
 
     summary_csv = output_path / f"media-cleanup-summary-{stamp}.csv"
     details_csv = output_path / f"media-cleanup-details-{stamp}.csv"
@@ -1123,6 +1135,7 @@ def run_audit(config_path: str, output_dir: str | Path) -> AuditResult:
         "scan_breakdown": scan_breakdown,
         "library_index": library_index,
         "diagnostics": diagnostics,
+        "qbittorrent_status": qbit_status,
         "counts": {
             "files_scanned": len(files),
             "groups": len(groups),
@@ -1212,6 +1225,9 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
     config = load_config(state.config_path)
     quarantined = quarantine_inventory(config)
     library_index = raw.get("library_index", []) if raw else []
+    qbit_configured = bool(config.get("qbittorrent", {}).get("enabled", False))
+    qbit_status = raw.get("qbittorrent_status", {}) if raw else {}
+    qbit_available = bool(qbit_status.get("available", qbit_configured))
     download_match_source = library_index or (raw.get("summary", []) if raw else [])
     return {
         "status": render_status(state),
@@ -1227,7 +1243,9 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
         "quarantined": quarantined,
         "storage_safety": quarantine_storage_status(config),
         "protections": {
-            "qbittorrent_enabled": bool(config.get("qbittorrent", {}).get("enabled", False)),
+            "qbittorrent_enabled": qbit_available,
+            "qbittorrent_configured": qbit_configured,
+            "qbittorrent_error": str(qbit_status.get("error", "")),
             "jellyfin_enabled": bool(config.get("jellyfin", {}).get("enabled", False)),
             "radarr_enabled": bool(config.get("radarr", {}).get("enabled", False)),
             "sonarr_enabled": bool(config.get("sonarr", {}).get("enabled", False)),

@@ -59,7 +59,7 @@ Downloads are grouped into a dedicated work queue with search, filters, sorting,
 
 The dashboard loads long queues in batches so large download folders stay usable on mobile. `Select shown` only selects the currently visible batch.
 
-With qBittorrent disabled, the app cannot know whether a download is still seeding. The dashboard shows a warning and keeps using quarantine first, then permanent delete only after verification.
+If qBittorrent is disabled or its web API cannot be reached, the audit still completes. The dashboard marks seeding protection as unavailable and requires a manual confirmation before quarantining downloads. Quarantine first, then permanent delete only after verification.
 
 ## Library Review
 

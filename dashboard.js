@@ -142,7 +142,15 @@ function renderOverview(data) {
   document.getElementById("overviewTimestamp").textContent = data.generated_at
     ? `Last scan ${formatDate(data.generated_at)} · ${latest.files_scanned || 0} video files`
     : "Waiting for the first audit.";
-  document.getElementById("qbitBanner").classList.toggle("show", hasAudit && !protections.qbittorrent_enabled);
+  const qbitUnavailable = hasAudit && !protections.qbittorrent_enabled;
+  document.getElementById("qbitBanner").classList.toggle("show", qbitUnavailable);
+  if (qbitUnavailable) {
+    const failed = Boolean(protections.qbittorrent_error);
+    document.getElementById("qbitTitle").textContent = failed ? "Seeding check unavailable" : "Seeding check is off";
+    document.getElementById("qbitBody").textContent = failed
+      ? "qBittorrent could not be reached or signed in to. Downloads require a manual seeding check before quarantine."
+      : "Download matches need a quick seeding check before quarantine.";
+  }
   renderStorageSafety(data.storage_safety || {});
 
   const cards = [
