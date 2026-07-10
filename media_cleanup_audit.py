@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import errno
 import html
 import mimetypes
 import json
@@ -479,6 +480,8 @@ def scan_video_files(config: dict[str, Any]) -> ScanResult:
             if path.suffix.lower() not in extensions:
                 continue
             path_text = path.as_posix()
+            if is_local_quarantine_path(config, path):
+                continue
             lowered = path_text.lower()
             if any(keyword in lowered for keyword in ignored):
                 continue
@@ -500,6 +503,14 @@ def scan_video_files(config: dict[str, Any]) -> ScanResult:
                 )
             )
     return ScanResult(files=found, errors=errors)
+
+
+def is_local_quarantine_path(config: dict[str, Any], path: Path) -> bool:
+    """Keep fast local quarantine folders out of future audits."""
+    quarantine = config.get("quarantine", {})
+    if not quarantine.get("local_fast_path", False):
+        return False
+    return ".mediacleanup-quarantine" in path.parts
 
 
 def safe_rglob(root: Path, errors: list[dict[str, str]]) -> list[Path]:
@@ -1394,6 +1405,70 @@ def quarantine_root(config: dict[str, Any]) -> Path:
     return Path(root)
 
 
+def quarantine_destination(config: dict[str, Any], source: Path) -> tuple[Path, Path]:
+    """Choose a fast same-filesystem quarantine root when it is enabled."""
+    quarantine = config.get("quarantine", {})
+    if not quarantine.get("local_fast_path", False):
+        return quarantine_root(config), Path(source.anchor) if source.anchor else Path("/")
+
+    candidates: list[Path] = []
+    for key in ("movies", "tv", "anime", "downloads"):
+        value = config.get("media_roots", {}).get(key)
+        if not value:
+            continue
+        candidate = Path(str(value))
+        try:
+            source.relative_to(candidate)
+        except ValueError:
+            continue
+        candidates.append(candidate)
+    if not candidates:
+        return quarantine_root(config), Path(source.anchor) if source.anchor else Path("/")
+
+    source_root = max(candidates, key=lambda item: len(item.parts))
+    return source_root / ".mediacleanup-quarantine", source_root
+
+
+def move_file(
+    source: Path,
+    dest: Path,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> str:
+    """Move atomically when possible; copy safely with byte progress across filesystems."""
+    try:
+        os.replace(source, dest)
+        return "instant"
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+
+    total = source.stat().st_size
+    copied = 0
+    partial = dest.with_name(f".{dest.name}.mediacleanup-partial")
+    partial.unlink(missing_ok=True)
+    try:
+        with source.open("rb") as reader, partial.open("xb") as writer:
+            while chunk := reader.read(16 * 1024 * 1024):
+                writer.write(chunk)
+                copied += len(chunk)
+                if progress:
+                    progress(copied, total, "Copying to quarantine")
+            writer.flush()
+            os.fsync(writer.fileno())
+        shutil.copystat(source, partial)
+        os.replace(partial, dest)
+        try:
+            source.unlink()
+        except OSError:
+            # Preserve the original if the final remove cannot happen.
+            dest.unlink(missing_ok=True)
+            raise
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    return "copied"
+
+
 def quarantine_manifest_path(config: dict[str, Any]) -> Path:
     return quarantine_root(config) / "mediacleanup-quarantine.json"
 
@@ -1446,7 +1521,7 @@ def latest_detail_map(state: DashboardState) -> dict[str, dict[str, Any]]:
     return {str(row.get("path", "")): row for row in raw.get("details", []) if row.get("path")}
 
 
-def quarantine_selected(state: DashboardState, paths: list[str], progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
+def quarantine_selected(state: DashboardState, paths: list[str], progress: Callable[..., None] | None = None) -> dict[str, Any]:
     config = load_config(state.config_path)
     root = quarantine_root(config)
     allowed = latest_detail_map(state)
@@ -1475,14 +1550,23 @@ def quarantine_selected(state: DashboardState, paths: list[str], progress: Calla
             if progress:
                 progress(index, total, f"Missing {Path(path_text).name}")
             continue
-        relative = str(source).replace("\\", "/").lstrip("/")
-        dest = root / batch / relative
+        destination_root, source_root = quarantine_destination(config, source)
+        try:
+            relative = source.relative_to(source_root)
+        except ValueError:
+            relative = Path(str(source).replace("\\", "/").lstrip("/"))
+        dest = destination_root / batch / relative
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             quarantine_readme(root)
+            quarantine_readme(destination_root)
             if progress:
                 progress(index - 1, total, f"Moving {source.name}")
-            shutil.move(str(source), str(dest))
+            move_file(
+                source,
+                dest,
+                lambda copied, size, stage: progress(index - 1, total, f"{stage}: {source.name}", copied, size, "copy") if progress else None,
+            )
         except OSError as exc:
             errors.append({"path": path_text, "error": str(exc)})
             if progress:
@@ -1508,7 +1592,7 @@ def quarantine_selected(state: DashboardState, paths: list[str], progress: Calla
     return {"moved": moved, "errors": errors, "quarantined": quarantine_inventory(config)}
 
 
-def restore_quarantined(state: DashboardState, ids: list[str], progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
+def restore_quarantined(state: DashboardState, ids: list[str], progress: Callable[..., None] | None = None) -> dict[str, Any]:
     config = load_config(state.config_path)
     manifest = read_quarantine_manifest(config)
     restored = []
@@ -1528,7 +1612,11 @@ def restore_quarantined(state: DashboardState, ids: list[str], progress: Callabl
             continue
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(source), str(dest))
+            move_file(
+                source,
+                dest,
+                lambda copied, size, stage: progress(index - 1, total, f"{stage}: {dest.name}", copied, size, "copy") if progress else None,
+            )
         except OSError as exc:
             errors.append({"id": row.get("id"), "error": str(exc)})
             if progress:
@@ -1544,7 +1632,7 @@ def restore_quarantined(state: DashboardState, ids: list[str], progress: Callabl
     return {"restored": restored, "errors": errors, "quarantined": quarantine_inventory(config)}
 
 
-def delete_quarantined(state: DashboardState, ids: list[str], confirmation: str, progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
+def delete_quarantined(state: DashboardState, ids: list[str], confirmation: str, progress: Callable[..., None] | None = None) -> dict[str, Any]:
     if confirmation != "DELETE":
         return {"deleted": [], "errors": [{"error": "type DELETE to permanently delete selected files"}]}
     config = load_config(state.config_path)
@@ -1704,6 +1792,9 @@ def action_status_payload(state: DashboardState) -> dict[str, Any]:
                 "total": 0,
                 "percent": 0,
                 "label": "",
+                "bytes_current": 0,
+                "bytes_total": 0,
+                "transfer_mode": "",
                 "result": None,
                 "error": "",
             }
@@ -1718,10 +1809,14 @@ def set_action_status(
     current: int,
     total: int,
     label: str,
+    bytes_current: int = 0,
+    bytes_total: int = 0,
+    transfer_mode: str = "",
     result: dict[str, Any] | None = None,
     error: str = "",
 ) -> None:
-    percent = 100 if total <= 0 and not running else int((current / total) * 100) if total else 0
+    file_fraction = (bytes_current / bytes_total) if bytes_total else 0
+    percent = 100 if total <= 0 and not running else int(((current + file_fraction) / total) * 100) if total else 0
     percent = max(0, min(100, percent))
     with state.action_lock:
         state.action_status = {
@@ -1732,6 +1827,9 @@ def set_action_status(
             "total": total,
             "percent": percent,
             "label": label,
+            "bytes_current": bytes_current,
+            "bytes_total": bytes_total,
+            "transfer_mode": transfer_mode,
             "result": result,
             "error": error,
         }
@@ -1756,12 +1854,32 @@ def start_dashboard_action(
             "total": len(items),
             "percent": 0,
             "label": "Starting",
+            "bytes_current": 0,
+            "bytes_total": 0,
+            "transfer_mode": "",
             "result": None,
             "error": "",
         }
 
-    def progress(current: int, total: int, label: str) -> None:
-        set_action_status(state, running=True, kind=kind, current=current, total=total, label=label)
+    def progress(
+        current: int,
+        total: int,
+        label: str,
+        bytes_current: int = 0,
+        bytes_total: int = 0,
+        transfer_mode: str = "",
+    ) -> None:
+        set_action_status(
+            state,
+            running=True,
+            kind=kind,
+            current=current,
+            total=total,
+            label=label,
+            bytes_current=bytes_current,
+            bytes_total=bytes_total,
+            transfer_mode=transfer_mode,
+        )
 
     def worker() -> None:
         try:

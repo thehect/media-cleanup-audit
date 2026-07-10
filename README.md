@@ -111,6 +111,15 @@ MEDIA_MOUNT_MODE=rw
 QUARANTINE_ROOT=/mnt/MediaCleanupQuarantine
 ```
 
+For fast quarantine, also add this to `config.yml`:
+
+```yaml
+quarantine:
+  local_fast_path: true
+```
+
+This keeps each quarantined file in a hidden `.mediacleanup-quarantine` folder on the same storage as its source. On a NAS this is normally an instant rename instead of a multi-gigabyte network copy. These folders are excluded from future audits, while the dashboard still tracks every item in its normal quarantine list.
+
 Then rebuild:
 
 ```bash

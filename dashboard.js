@@ -642,7 +642,11 @@ async function waitForAction(actionId, options = {}) {
       const total = Number(status.total || 0);
       const current = Number(status.current || 0);
       const percent = Number(status.percent || (total ? Math.round((current / total) * 100) : 0));
-      const detail = total ? `${current} of ${total}` : "Preparing files";
+      const rowDetail = total ? `${current} of ${total}` : "Preparing files";
+      const bytesCurrent = Number(status.bytes_current || 0);
+      const bytesTotal = Number(status.bytes_total || 0);
+      const transferDetail = bytesTotal ? ` · ${humanSize(bytesCurrent)} of ${humanSize(bytesTotal)}` : "";
+      const detail = `${rowDetail}${transferDetail}`;
       setActionProgress(true, options.progressTitle || titleCase(status.kind || "Working"), `${status.label || options.progressText || "Working"} · ${detail}`, percent);
       if (!status.running) return status;
     }

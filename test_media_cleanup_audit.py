@@ -29,6 +29,9 @@ from media_cleanup_audit import (
     fetch_jellyfin_user_id,
     fetch_sonarr,
     library_index_rows,
+    move_file,
+    quarantine_destination,
+    scan_video_files,
     start_dashboard_action,
 )
 
@@ -316,6 +319,44 @@ class MediaCleanupAuditTests(unittest.TestCase):
             self.assertEqual(status["percent"], 100)
             self.assertFalse(qfile.exists())
             self.assertEqual(status["result"]["deleted"][0]["id"], row["id"])
+
+    def test_fast_local_quarantine_stays_beside_the_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            downloads = root / "downloads"
+            source = downloads / "show" / "episode.mkv"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"media")
+            config = {
+                "media_roots": {"downloads": downloads.as_posix(), "erase_later": (root / "central").as_posix()},
+                "quarantine": {"local_fast_path": True},
+            }
+            destination_root, source_root = quarantine_destination(config, source)
+            self.assertEqual(destination_root, downloads / ".mediacleanup-quarantine")
+            self.assertEqual(source_root, downloads)
+
+            destination = destination_root / "batch" / source.relative_to(source_root)
+            destination.parent.mkdir(parents=True)
+            self.assertEqual(move_file(source, destination), "instant")
+            self.assertFalse(source.exists())
+            self.assertEqual(destination.read_bytes(), b"media")
+
+    def test_fast_local_quarantine_is_not_scanned_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            downloads = root / "downloads"
+            (downloads / "normal.mkv").parent.mkdir(parents=True)
+            (downloads / "normal.mkv").write_bytes(b"normal")
+            held = downloads / ".mediacleanup-quarantine" / "batch" / "held.mkv"
+            held.parent.mkdir(parents=True)
+            held.write_bytes(b"held")
+            config = {
+                "media_roots": {"downloads": downloads.as_posix()},
+                "scan": {"roots": [downloads.as_posix()]},
+                "quarantine": {"local_fast_path": True},
+            }
+            scanned = scan_video_files(config)
+            self.assertEqual([Path(item.path).name for item in scanned.files], ["normal.mkv"])
 
     def test_download_cleanup_marks_imported_leftovers_high_confidence(self):
         rows = download_cleanup_rows(
