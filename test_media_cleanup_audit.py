@@ -103,6 +103,7 @@ class MediaCleanupAuditTests(unittest.TestCase):
         self.assertIn("Library review", body)
         self.assertIn("downloadBrief", body)
         self.assertIn("Select matches", body)
+        self.assertIn("actionProgress", body)
 
     def test_dashboard_status_includes_latest_report_names(self):
         result = AuditResult(

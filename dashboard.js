@@ -543,7 +543,11 @@ async function restoreSelected() {
   const ids = Array.from(selections.quarantine);
   if (!ids.length) return showMessage("Select at least one quarantined file first.", false);
   selections.quarantine.clear();
-  await postAction("/restore", { ids }, "Restored to the original location.");
+  await postAction("/restore", { ids }, "Restored to the original location.", {
+    progressTitle: "Restoring",
+    progressText: `Moving ${ids.length} ${plural(ids.length, "file", "files")} back...`,
+    optimistic: { type: "quarantine", ids },
+  });
 }
 
 function requestDelete() {
@@ -571,10 +575,18 @@ async function confirmModalAction() {
   closeModal();
   if (action.type === "quarantine") {
     selections[action.kind].clear();
-    await postAction("/quarantine", { paths: action.paths }, "Moved to quarantine.");
+    await postAction("/quarantine", { paths: action.paths }, "Moved to quarantine.", {
+      progressTitle: "Quarantining",
+      progressText: `Moving ${action.paths.length} ${plural(action.paths.length, "file", "files")} to quarantine...`,
+      optimistic: { type: action.kind, paths: action.paths },
+    });
   } else if (action.type === "delete") {
     selections.quarantine.clear();
-    await postAction("/delete", { ids: action.ids, confirmation: "DELETE" }, "Permanently deleted.");
+    await postAction("/delete", { ids: action.ids, confirmation: "DELETE" }, "Permanently deleted.", {
+      progressTitle: "Deleting",
+      progressText: `Deleting ${action.ids.length} quarantined ${plural(action.ids.length, "file", "files")}...`,
+      optimistic: { type: "quarantine", ids: action.ids },
+    });
   }
 }
 
@@ -593,7 +605,8 @@ function closeModalFromBackdrop(event) {
   if (event.target.id === "modalBackdrop") closeModal();
 }
 
-async function postAction(url, payload, successText) {
+async function postAction(url, payload, successText, options = {}) {
+  setActionProgress(true, options.progressTitle || "Working", options.progressText || "Updating files...");
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -605,11 +618,14 @@ async function postAction(url, payload, successText) {
     if (data.errors && data.errors.length) {
       showMessage(data.errors.map((error) => error.error || JSON.stringify(error)).join(" · "), true);
     } else {
+      applyOptimisticUpdate(options.optimistic);
       showMessage(successText || "Done.", false);
     }
     await poll();
   } catch (error) {
     showMessage(error.message || String(error), true);
+  } finally {
+    setActionProgress(false);
   }
 }
 
@@ -626,6 +642,58 @@ function renderNavCounts(data) {
   document.getElementById("navDuplicates").textContent = (data.duplicate_candidates || []).length;
   document.getElementById("navLibrary").textContent = (data.library_review || data.safe_candidates || []).length;
   document.getElementById("navQuarantine").textContent = (data.quarantined || {}).items || 0;
+}
+
+function applyOptimisticUpdate(update) {
+  if (!update || !lastData) return;
+  if (update.paths && update.paths.length) {
+    const removed = new Set(update.paths.map(String));
+    if (update.type === "download") {
+      const before = lastData.download_candidates || [];
+      const removedRows = before.filter((row) => removed.has(String(row.path)));
+      lastData.download_candidates = before.filter((row) => !removed.has(String(row.path)));
+      adjustDownloadSummary(removedRows);
+    } else if (update.type === "duplicate") {
+      lastData.duplicate_candidates = (lastData.duplicate_candidates || []).filter((row) => !removed.has(String(row.path)));
+    } else if (update.type === "library") {
+      lastData.library_review = (lastData.library_review || lastData.safe_candidates || []).filter((row) => !removed.has(String(row.path)));
+      lastData.safe_candidates = lastData.library_review;
+    }
+    selections[update.type]?.clear();
+    rerenderKind(update.type);
+  }
+  if (update.ids && update.ids.length && update.type === "quarantine") {
+    const removedIds = new Set(update.ids.map(String));
+    const quarantined = lastData.quarantined || { rows: [], items: 0 };
+    quarantined.rows = (quarantined.rows || []).filter((row) => !removedIds.has(String(row.id)));
+    quarantined.items = quarantined.rows.length;
+    selections.quarantine.clear();
+    lastData.quarantined = quarantined;
+    renderQuarantine(quarantined);
+  }
+  renderNavCounts(lastData);
+}
+
+function adjustDownloadSummary(removedRows) {
+  const summary = lastData.download_summary || {};
+  const removedCount = removedRows.length;
+  if (!removedCount) return;
+  summary.items = Math.max(0, Number(summary.items || 0) - removedCount);
+  summary.high_confidence = Math.max(0, Number(summary.high_confidence || 0) - removedRows.filter((row) => row.confidence === "High").length);
+  summary.older_than_14_days = Math.max(0, Number(summary.older_than_14_days || 0) - removedRows.filter((row) => Number(row.age_days) >= 14).length);
+  const remainingTotal = (lastData.download_candidates || []).reduce((sum, row) => sum + Number(row.size || 0), 0);
+  const remainingLikely = (lastData.download_candidates || []).filter((row) => row.confidence === "High").reduce((sum, row) => sum + Number(row.size || 0), 0);
+  summary.total_size = humanSize(remainingTotal);
+  summary.likely_reclaimable = humanSize(remainingLikely);
+  lastData.download_summary = summary;
+}
+
+function setActionProgress(show, title = "Working", text = "Updating files...") {
+  const target = document.getElementById("actionProgress");
+  if (!target) return;
+  target.classList.toggle("show", Boolean(show));
+  document.getElementById("actionProgressTitle").textContent = title;
+  document.getElementById("actionProgressText").textContent = text;
 }
 
 function setStatus(isRunning, statusText, timeText) {

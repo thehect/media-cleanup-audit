@@ -30,6 +30,10 @@
         <div class="top-status"><span id="topStatus">__STATUS_TEXT__</span> <span aria-hidden="true">&middot;</span> <span id="topTime">__TIME_TEXT__</span></div>
         <div class="top-actions"><button id="run" class="primary" onclick="runAudit()">Run audit</button></div>
       </header>
+      <div class="action-progress" id="actionProgress" role="status" aria-live="polite">
+        <div><strong id="actionProgressTitle">Working</strong><span id="actionProgressText">Updating files...</span></div>
+        <div class="progress-track"><span></span></div>
+      </div>
 
       <main class="content">
         <section class="view active" id="view-overview">
