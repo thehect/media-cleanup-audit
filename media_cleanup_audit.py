@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import yaml
@@ -111,6 +111,9 @@ class DashboardState:
     last_finished: str = ""
     last_error: str = ""
     last_result: AuditResult | None = None
+    action_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    action_id: int = 0
+    action_status: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 def log(message: str) -> None:
@@ -1443,7 +1446,7 @@ def latest_detail_map(state: DashboardState) -> dict[str, dict[str, Any]]:
     return {str(row.get("path", "")): row for row in raw.get("details", []) if row.get("path")}
 
 
-def quarantine_selected(state: DashboardState, paths: list[str]) -> dict[str, Any]:
+def quarantine_selected(state: DashboardState, paths: list[str], progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
     config = load_config(state.config_path)
     root = quarantine_root(config)
     allowed = latest_detail_map(state)
@@ -1451,26 +1454,39 @@ def quarantine_selected(state: DashboardState, paths: list[str]) -> dict[str, An
     moved = []
     errors = []
     batch = datetime.now().strftime("%Y%m%d-%H%M%S")
-    for path_text in paths:
+    total = len(paths)
+    for index, path_text in enumerate(paths, 1):
+        if progress:
+            progress(index - 1, total, f"Checking {Path(path_text).name}")
         row = allowed.get(path_text)
         if not row:
             errors.append({"path": path_text, "error": "not found in latest audit details"})
+            if progress:
+                progress(index, total, f"Skipped {Path(path_text).name}")
             continue
         if str(row.get("protected_by_qbit", "")).lower() == "true":
             errors.append({"path": path_text, "error": "protected by qBittorrent"})
+            if progress:
+                progress(index, total, f"Skipped {Path(path_text).name}")
             continue
         source = Path(path_text)
         if not source.exists():
             errors.append({"path": path_text, "error": "file no longer exists"})
+            if progress:
+                progress(index, total, f"Missing {Path(path_text).name}")
             continue
         relative = str(source).replace("\\", "/").lstrip("/")
         dest = root / batch / relative
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             quarantine_readme(root)
+            if progress:
+                progress(index - 1, total, f"Moving {source.name}")
             shutil.move(str(source), str(dest))
         except OSError as exc:
             errors.append({"path": path_text, "error": str(exc)})
+            if progress:
+                progress(index, total, f"Failed {source.name}")
             continue
         record = {
             "id": f"{batch}:{len(manifest) + len(moved) + 1}",
@@ -1485,40 +1501,50 @@ def quarantine_selected(state: DashboardState, paths: list[str]) -> dict[str, An
         }
         manifest.append(record)
         moved.append(record)
+        if progress:
+            progress(index, total, f"Moved {source.name}")
     if moved:
         write_quarantine_manifest(config, manifest)
     return {"moved": moved, "errors": errors, "quarantined": quarantine_inventory(config)}
 
 
-def restore_quarantined(state: DashboardState, ids: list[str]) -> dict[str, Any]:
+def restore_quarantined(state: DashboardState, ids: list[str], progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
     config = load_config(state.config_path)
     manifest = read_quarantine_manifest(config)
     restored = []
     errors = []
     selected = set(ids)
-    for row in manifest:
-        if row.get("id") not in selected or row.get("status", "quarantined") != "quarantined":
-            continue
+    rows_to_process = [row for row in manifest if row.get("id") in selected and row.get("status", "quarantined") == "quarantined"]
+    total = len(rows_to_process)
+    for index, row in enumerate(rows_to_process, 1):
         source = Path(str(row.get("quarantine_path", "")))
         dest = Path(str(row.get("original_path", "")))
+        if progress:
+            progress(index - 1, total, f"Restoring {dest.name}")
         if not source.exists():
             errors.append({"id": row.get("id"), "error": "quarantined file is missing"})
+            if progress:
+                progress(index, total, f"Missing {dest.name}")
             continue
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(source), str(dest))
         except OSError as exc:
             errors.append({"id": row.get("id"), "error": str(exc)})
+            if progress:
+                progress(index, total, f"Failed {dest.name}")
             continue
         row["status"] = "restored"
         row["restored_at"] = datetime.now().isoformat(timespec="seconds")
         restored.append(row)
+        if progress:
+            progress(index, total, f"Restored {dest.name}")
     if restored:
         write_quarantine_manifest(config, manifest)
     return {"restored": restored, "errors": errors, "quarantined": quarantine_inventory(config)}
 
 
-def delete_quarantined(state: DashboardState, ids: list[str], confirmation: str) -> dict[str, Any]:
+def delete_quarantined(state: DashboardState, ids: list[str], confirmation: str, progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
     if confirmation != "DELETE":
         return {"deleted": [], "errors": [{"error": "type DELETE to permanently delete selected files"}]}
     config = load_config(state.config_path)
@@ -1526,19 +1552,25 @@ def delete_quarantined(state: DashboardState, ids: list[str], confirmation: str)
     deleted = []
     errors = []
     selected = set(ids)
-    for row in manifest:
-        if row.get("id") not in selected or row.get("status", "quarantined") != "quarantined":
-            continue
+    rows_to_process = [row for row in manifest if row.get("id") in selected and row.get("status", "quarantined") == "quarantined"]
+    total = len(rows_to_process)
+    for index, row in enumerate(rows_to_process, 1):
         path = Path(str(row.get("quarantine_path", "")))
+        if progress:
+            progress(index - 1, total, f"Deleting {path.name}")
         try:
             if path.exists():
                 path.unlink()
         except OSError as exc:
             errors.append({"id": row.get("id"), "error": str(exc)})
+            if progress:
+                progress(index, total, f"Failed {path.name}")
             continue
         row["status"] = "deleted"
         row["deleted_at"] = datetime.now().isoformat(timespec="seconds")
         deleted.append(row)
+        if progress:
+            progress(index, total, f"Deleted {path.name}")
     if deleted:
         write_quarantine_manifest(config, manifest)
     return {"deleted": deleted, "errors": errors, "quarantined": quarantine_inventory(config)}
@@ -1556,6 +1588,9 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
                 return
             if parsed.path == "/status":
                 self.send_json(render_status(state))
+                return
+            if parsed.path == "/action-status":
+                self.send_json(action_status_payload(state))
                 return
             if parsed.path == "/data":
                 try:
@@ -1579,15 +1614,15 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
                 return
             if parsed.path == "/quarantine":
                 payload = self.read_json_body()
-                self.send_json(quarantine_selected(state, list(payload.get("paths", []))))
+                self.send_json(start_dashboard_action(state, "quarantine", list(payload.get("paths", []))))
                 return
             if parsed.path == "/restore":
                 payload = self.read_json_body()
-                self.send_json(restore_quarantined(state, list(payload.get("ids", []))))
+                self.send_json(start_dashboard_action(state, "restore", list(payload.get("ids", []))))
                 return
             if parsed.path == "/delete":
                 payload = self.read_json_body()
-                self.send_json(delete_quarantined(state, list(payload.get("ids", [])), str(payload.get("confirmation", ""))))
+                self.send_json(start_dashboard_action(state, "delete", list(payload.get("ids", [])), str(payload.get("confirmation", ""))))
                 return
             self.send_error(404)
 
@@ -1656,6 +1691,94 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
     server = ThreadingHTTPServer((host, port), Handler)
     log(f"Media Cleanup dashboard listening on http://{host}:{port}")
     server.serve_forever()
+
+
+def action_status_payload(state: DashboardState) -> dict[str, Any]:
+    with state.action_lock:
+        if not state.action_status:
+            return {
+                "id": state.action_id,
+                "running": False,
+                "kind": "",
+                "current": 0,
+                "total": 0,
+                "percent": 0,
+                "label": "",
+                "result": None,
+                "error": "",
+            }
+        return dict(state.action_status)
+
+
+def set_action_status(
+    state: DashboardState,
+    *,
+    running: bool,
+    kind: str,
+    current: int,
+    total: int,
+    label: str,
+    result: dict[str, Any] | None = None,
+    error: str = "",
+) -> None:
+    percent = 100 if total <= 0 and not running else int((current / total) * 100) if total else 0
+    percent = max(0, min(100, percent))
+    with state.action_lock:
+        state.action_status = {
+            "id": state.action_id,
+            "running": running,
+            "kind": kind,
+            "current": current,
+            "total": total,
+            "percent": percent,
+            "label": label,
+            "result": result,
+            "error": error,
+        }
+
+
+def start_dashboard_action(
+    state: DashboardState,
+    kind: str,
+    items: list[str],
+    confirmation: str = "",
+) -> dict[str, Any]:
+    with state.action_lock:
+        if state.action_status.get("running"):
+            return {"started": False, "error": "another file action is already running", "action": dict(state.action_status)}
+        state.action_id += 1
+        action_id = state.action_id
+        state.action_status = {
+            "id": action_id,
+            "running": True,
+            "kind": kind,
+            "current": 0,
+            "total": len(items),
+            "percent": 0,
+            "label": "Starting",
+            "result": None,
+            "error": "",
+        }
+
+    def progress(current: int, total: int, label: str) -> None:
+        set_action_status(state, running=True, kind=kind, current=current, total=total, label=label)
+
+    def worker() -> None:
+        try:
+            if kind == "quarantine":
+                result = quarantine_selected(state, items, progress)
+            elif kind == "restore":
+                result = restore_quarantined(state, items, progress)
+            elif kind == "delete":
+                result = delete_quarantined(state, items, confirmation, progress)
+            else:
+                result = {"errors": [{"error": f"unknown action {kind}"}]}
+            set_action_status(state, running=False, kind=kind, current=len(items), total=len(items), label="Complete", result=result)
+        except Exception as exc:
+            set_action_status(state, running=False, kind=kind, current=0, total=len(items), label="Failed", result=None, error=str(exc))
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"started": True, "action": action_status_payload(state)}
 
 
 def start_dashboard_audit(state: DashboardState) -> bool:

@@ -1,3 +1,6 @@
+import json
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -6,6 +9,7 @@ from media_cleanup_audit import (
     DashboardState,
     MediaGroup,
     VideoFile,
+    action_status_payload,
     classify_groups,
     canonicalize_path,
     classify_unmatched,
@@ -25,6 +29,7 @@ from media_cleanup_audit import (
     fetch_jellyfin_user_id,
     fetch_sonarr,
     library_index_rows,
+    start_dashboard_action,
 )
 
 
@@ -40,6 +45,50 @@ def vf(path, size, inode, qbit=False, jellyfin=False):
         protected_by_qbit=qbit,
         jellyfin_visible=jellyfin,
     )
+
+
+def write_action_config(root: Path) -> Path:
+    config = root / "config.yml"
+    qroot = (root / "quarantine").as_posix()
+    config.write_text(
+        "\n".join(
+            [
+                "media_roots:",
+                f"  erase_later: {qroot}",
+                "scan:",
+                "  roots:",
+                f"    - {qroot}",
+                "jellyfin:",
+                "  enabled: false",
+                "radarr:",
+                "  enabled: false",
+                "sonarr:",
+                "  enabled: false",
+                "qbittorrent:",
+                "  enabled: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return config
+
+
+def write_quarantined_file(root: Path) -> tuple[Path, dict]:
+    qroot = root / "quarantine"
+    qfile = qroot / "batch" / "movie.mkv"
+    qfile.parent.mkdir(parents=True)
+    qfile.write_bytes(b"media")
+    row = {
+        "id": "batch:1",
+        "original_path": (root / "movies" / "movie.mkv").as_posix(),
+        "quarantine_path": qfile.as_posix(),
+        "size": 5,
+        "size_human": "5 B",
+        "title": "movie",
+        "status": "quarantined",
+    }
+    (qroot / "mediacleanup-quarantine.json").write_text(json.dumps([row]), encoding="utf-8")
+    return qfile, row
 
 
 class MediaCleanupAuditTests(unittest.TestCase):
@@ -235,6 +284,38 @@ class MediaCleanupAuditTests(unittest.TestCase):
         result = delete_quarantined(state, ["anything"], "delete")
         self.assertEqual(result["deleted"], [])
         self.assertIn("DELETE", result["errors"][0]["error"])
+
+    def test_delete_quarantined_removes_file_and_reports_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = write_action_config(root)
+            qfile, row = write_quarantined_file(root)
+            state = DashboardState(config_path=str(config), output_dir=root / "reports")
+            calls = []
+            result = delete_quarantined(state, [row["id"]], "DELETE", lambda current, total, label: calls.append((current, total, label)))
+            self.assertFalse(qfile.exists())
+            self.assertEqual(result["deleted"][0]["id"], row["id"])
+            self.assertEqual(calls[-1][0], 1)
+            self.assertEqual(calls[-1][1], 1)
+
+    def test_dashboard_action_status_tracks_delete_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = write_action_config(root)
+            qfile, row = write_quarantined_file(root)
+            state = DashboardState(config_path=str(config), output_dir=root / "reports")
+            started = start_dashboard_action(state, "delete", [row["id"]], "DELETE")
+            self.assertTrue(started["started"])
+            status = action_status_payload(state)
+            for _ in range(100):
+                status = action_status_payload(state)
+                if not status["running"]:
+                    break
+                time.sleep(0.01)
+            self.assertFalse(status["running"])
+            self.assertEqual(status["percent"], 100)
+            self.assertFalse(qfile.exists())
+            self.assertEqual(status["result"]["deleted"][0]["id"], row["id"])
 
     def test_download_cleanup_marks_imported_leftovers_high_confidence(self):
         rows = download_cleanup_rows(

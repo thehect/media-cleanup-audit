@@ -606,7 +606,7 @@ function closeModalFromBackdrop(event) {
 }
 
 async function postAction(url, payload, successText, options = {}) {
-  setActionProgress(true, options.progressTitle || "Working", options.progressText || "Updating files...");
+  setActionProgress(true, options.progressTitle || "Working", options.progressText || "Starting...", 0);
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -615,18 +615,52 @@ async function postAction(url, payload, successText, options = {}) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
-    if (data.errors && data.errors.length) {
-      showMessage(data.errors.map((error) => error.error || JSON.stringify(error)).join(" · "), true);
+    if (!data.started) throw new Error(data.error || "File action could not start.");
+    const status = await waitForAction(data.action && data.action.id, options);
+    if (status.error) throw new Error(status.error);
+    const result = status.result || {};
+    applyOptimisticUpdate(updateFromActionResult(options.optimistic, result));
+    if (result.errors && result.errors.length) {
+      showMessage(result.errors.map((error) => error.error || JSON.stringify(error)).join(" · "), true);
     } else {
-      applyOptimisticUpdate(options.optimistic);
       showMessage(successText || "Done.", false);
     }
     await poll();
   } catch (error) {
     showMessage(error.message || String(error), true);
   } finally {
-    setActionProgress(false);
+    setActionProgress(false, "Done", "Refreshing...", 100);
   }
+}
+
+async function waitForAction(actionId, options = {}) {
+  while (true) {
+    const response = await fetch("/action-status");
+    if (!response.ok) throw new Error(`Action status failed (${response.status})`);
+    const status = await response.json();
+    if (!actionId || status.id === actionId) {
+      const total = Number(status.total || 0);
+      const current = Number(status.current || 0);
+      const percent = Number(status.percent || (total ? Math.round((current / total) * 100) : 0));
+      const detail = total ? `${current} of ${total}` : "Preparing files";
+      setActionProgress(true, options.progressTitle || titleCase(status.kind || "Working"), `${status.label || options.progressText || "Working"} · ${detail}`, percent);
+      if (!status.running) return status;
+    }
+    await delay(500);
+  }
+}
+
+function updateFromActionResult(fallback, result) {
+  if (result.moved && result.moved.length) {
+    return { type: fallback?.type, paths: result.moved.map((row) => row.original_path).filter(Boolean) };
+  }
+  if (result.restored && result.restored.length) {
+    return { type: "quarantine", ids: result.restored.map((row) => row.id).filter(Boolean) };
+  }
+  if (result.deleted && result.deleted.length) {
+    return { type: "quarantine", ids: result.deleted.map((row) => row.id).filter(Boolean) };
+  }
+  return null;
 }
 
 function goTo(view) {
@@ -688,12 +722,14 @@ function adjustDownloadSummary(removedRows) {
   lastData.download_summary = summary;
 }
 
-function setActionProgress(show, title = "Working", text = "Updating files...") {
+function setActionProgress(show, title = "Working", text = "Updating files...", percent = 0) {
   const target = document.getElementById("actionProgress");
   if (!target) return;
   target.classList.toggle("show", Boolean(show));
   document.getElementById("actionProgressTitle").textContent = title;
   document.getElementById("actionProgressText").textContent = text;
+  const bar = target.querySelector(".progress-track span");
+  if (bar) bar.style.width = `${Math.max(0, Math.min(100, Number(percent || 0)))}%`;
 }
 
 function setStatus(isRunning, statusText, timeText) {
@@ -784,6 +820,10 @@ function escapeAttr(value) {
 
 function titleCase(value) {
   return String(value || "").replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 document.addEventListener("keydown", (event) => {
