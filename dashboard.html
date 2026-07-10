@@ -74,6 +74,7 @@
             <div><h1>Downloads</h1><div class="sub">Library matches first, then older and larger files.</div></div>
           </div>
           <div class="queue-summary" id="downloadSummary"></div>
+          <div class="queue-brief" id="downloadBrief"></div>
           <div class="toolbar">
             <div class="toolbar-left segmented" data-segments="download">
               <button class="active" onclick="setFilter('download','all',this)">All</button>
@@ -89,6 +90,7 @@
                 <option value="oldest">Oldest</option>
                 <option value="name">Name</option>
               </select>
+              <button onclick="selectRecommended('download')">Select matches</button>
               <button onclick="selectVisible('download')">Select shown</button>
             </div>
           </div>
@@ -101,6 +103,7 @@
             <div><h1>Duplicates</h1><div class="sub">Larger versions paired with the smaller library copy that stays.</div></div>
           </div>
           <div class="queue-summary" id="duplicateSummary"></div>
+          <div class="queue-brief" id="duplicateBrief"></div>
           <div class="toolbar">
             <div class="toolbar-left segmented" data-segments="duplicate">
               <button class="active" onclick="setFilter('duplicate','all',this)">All</button>
@@ -122,6 +125,7 @@
             <div><h1>Library review</h1><div class="sub">Video files in library folders that the media apps did not confirm.</div></div>
           </div>
           <div class="queue-summary" id="librarySummary"></div>
+          <div class="queue-brief" id="libraryBrief"></div>
           <div class="toolbar">
             <div class="toolbar-left segmented" data-segments="library">
               <button class="active" onclick="setFilter('library','all',this)">All</button>
@@ -144,6 +148,7 @@
             <div><h1>Quarantine</h1><div class="sub">Recover files or permanently remove verified items.</div></div>
           </div>
           <div class="queue-summary" id="quarantineSummary"></div>
+          <div class="queue-brief" id="quarantineBrief"></div>
           <div class="toolbar quarantine-toolbar">
             <div></div>
             <div class="toolbar-right">

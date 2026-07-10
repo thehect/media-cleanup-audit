@@ -101,6 +101,8 @@ class MediaCleanupAuditTests(unittest.TestCase):
         self.assertIn("/assets/dashboard.css", body)
         self.assertIn("/assets/dashboard.js", body)
         self.assertIn("Library review", body)
+        self.assertIn("downloadBrief", body)
+        self.assertIn("Select matches", body)
 
     def test_dashboard_status_includes_latest_report_names(self):
         result = AuditResult(

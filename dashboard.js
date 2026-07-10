@@ -214,6 +214,7 @@ function renderCandidates(kind, rows) {
   const visible = visibleRows(kind, filtered);
   const target = kind === "duplicate" ? "duplicates" : "libraryRows";
   const summary = kind === "duplicate" ? "duplicateSummary" : "librarySummary";
+  renderQueueBrief(kind, rows, filtered, visible);
   document.getElementById(summary).innerHTML = `<span><strong>${rows.length}</strong> total</span><span><strong>${visible.length}</strong> shown</span>`;
   document.getElementById(target).innerHTML = filtered.length
     ? visible.map((row) => candidateRowHtml(kind, row)).join("") + loadMoreHtml(kind, filtered, visible)
@@ -227,11 +228,13 @@ function renderCandidates(kind, rows) {
 function candidateRowHtml(kind, row) {
   const selected = selections[kind].has(String(row.path));
   const type = kind === "duplicate" ? titleCase(row.kind || "media") : titleCase(row.location || row.kind || "library");
+  const note = recommendationText(kind, row);
   return `<label class="media-row ${selected ? "selected" : ""}">
     <input type="checkbox" data-kind="${kind}" value="${escapeAttr(row.path)}" ${selected ? "checked" : ""} onchange="syncSelection(this)">
     <div>
       <div class="row-top"><div class="item-title">${escapeHtml(row.title || fileName(row.path))}</div><div class="row-size">${escapeHtml(row.size_human || "Unknown")}</div></div>
       ${row.keeper ? compareHtml(row) : `<div class="path">${escapeHtml(row.path)}</div>`}
+      <div class="row-reason">${escapeHtml(note)}</div>
       <div class="tags"><span class="tag ${kind === "duplicate" ? "high" : "review"}">${kind === "duplicate" ? "Confirmed match" : "Needs review"}</span><span class="tag">${escapeHtml(type)}</span></div>
     </div>
   </label>`;
@@ -257,6 +260,7 @@ function compareHtml(row) {
 function renderDownloads(rows, summary) {
   const filtered = filteredRows("download", rows);
   const visible = visibleRows("download", filtered);
+  renderQueueBrief("download", rows, filtered, visible, summary);
   document.getElementById("downloadSummary").innerHTML = `
     <span><strong>${summary.items || 0}</strong> files</span>
     <span><strong>${escapeHtml(summary.total_size || "0 B")}</strong> total</span>
@@ -266,11 +270,13 @@ function renderDownloads(rows, summary) {
   document.getElementById("downloads").innerHTML = filtered.length
     ? visible.map((row) => {
       const selected = selections.download.has(String(row.path));
+      const note = recommendationText("download", row);
       return `<label class="media-row ${selected ? "selected" : ""}">
         <input type="checkbox" data-kind="download" value="${escapeAttr(row.path)}" ${selected ? "checked" : ""} onchange="syncSelection(this)">
         <div>
           <div class="row-top"><div class="item-title">${escapeHtml(row.title || fileName(row.path))}</div><div class="row-size">${escapeHtml(row.size_human || "Unknown")}</div></div>
           ${row.keeper ? compareHtml(row) : `<div class="path">${escapeHtml(row.path)}</div>`}
+          <div class="row-reason">${escapeHtml(note)}</div>
           <div class="tags">
             <span class="tag ${String(row.confidence || "review").toLowerCase()}">${row.confidence === "High" ? "Library match" : escapeHtml(row.confidence || "Review")}</span>
             <span class="tag">${escapeHtml(row.bucket || "Download")}</span>
@@ -288,6 +294,7 @@ function renderQuarantine(quarantine) {
   const rows = quarantine.rows || [];
   const filtered = filteredRows("quarantine", rows);
   const visible = visibleRows("quarantine", filtered);
+  renderQueueBrief("quarantine", rows, filtered, visible, quarantine);
   document.getElementById("quarantineSummary").innerHTML = `<span><strong>${quarantine.items || 0}</strong> items</span><span><strong>${escapeHtml(quarantine.recoverable_size || "0 B")}</strong> recoverable</span><span><strong>${visible.length}</strong> shown</span>`;
   document.getElementById("quarantined").innerHTML = filtered.length
     ? visible.map((row) => {
@@ -351,6 +358,48 @@ function filteredRows(kind, suppliedRows) {
   if (sort === "name") rows.sort((left, right) => String(left.title || left.path || "").localeCompare(String(right.title || right.path || "")));
   if (sort === "newest") rows.sort((left, right) => String(right.moved_at || "").localeCompare(String(left.moved_at || "")));
   return rows;
+}
+
+function renderQueueBrief(kind, rows, filtered, visible, summary = {}) {
+  const target = document.getElementById(`${kind}Brief`);
+  if (!target) return;
+  const total = rows.length;
+  const shown = visible.length;
+  const selected = selections[kind] ? selections[kind].size : 0;
+  let title = "Review queue";
+  let body = `${shown} of ${filtered.length} shown. ${selected} selected.`;
+  let tone = "";
+
+  if (kind === "download") {
+    const high = Number(summary.high_confidence || rows.filter((row) => row.confidence === "High").length);
+    const old = Number(summary.older_than_14_days || rows.filter((row) => Number(row.age_days) >= 14).length);
+    title = high ? "Start with library matches" : "Sort the downloads pile";
+    body = high
+      ? `${high} exact library ${plural(high, "match", "matches")} found. Select matches only moves the visible exact matches.`
+      : `${old} files are 14+ days old. Without qBittorrent protection, treat old downloads as review items.`;
+    tone = high ? "good" : "warn";
+  } else if (kind === "duplicate") {
+    title = total ? "Compare before quarantine" : "No duplicate versions";
+    body = total
+      ? "Each row pairs the file to move with the library file that stays."
+      : "No larger duplicate candidates are waiting in this scan.";
+    tone = total ? "good" : "";
+  } else if (kind === "library") {
+    title = total ? "Possible library leftovers" : "No library leftovers";
+    body = total
+      ? "These videos live in a library folder but were not confirmed by the media apps."
+      : "Movies, TV, and Anime do not have unconfirmed video files in this scan.";
+    tone = total ? "warn" : "good";
+  } else if (kind === "quarantine") {
+    title = total ? "Recoverable holding area" : "Quarantine is empty";
+    body = total
+      ? `${summary.recoverable_size || "0 B"} is recoverable until you type DELETE on the permanent delete screen.`
+      : "Nothing is waiting for restore or permanent delete.";
+    tone = total ? "" : "good";
+  }
+
+  target.className = `queue-brief ${tone}`;
+  target.innerHTML = `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(body)}</span>`;
 }
 
 function visibleRows(kind, rows) {
@@ -422,6 +471,19 @@ function selectVisible(kind) {
   rerenderKind(kind);
 }
 
+function selectRecommended(kind) {
+  const rows = visibleRows(kind, filteredRows(kind));
+  const key = kind === "quarantine" ? "id" : "path";
+  const recommended = rows.filter((row) => {
+    if (kind === "download") return row.confidence === "High";
+    if (kind === "duplicate") return Boolean(row.keeper);
+    return false;
+  });
+  if (!recommended.length) return showMessage("No recommended files are visible in this view.", false);
+  recommended.forEach((row) => selections[kind].add(String(row[key])));
+  rerenderKind(kind);
+}
+
 function clearSelection(kind) {
   selections[kind].clear();
   rerenderKind(kind);
@@ -449,7 +511,8 @@ function renderSelectionBar(kind) {
   const actions = kind === "quarantine"
     ? `<button onclick="restoreSelected()">Restore</button><button class="danger" onclick="requestDelete()">Delete permanently</button>`
     : `<button class="primary" onclick="requestQuarantine('${kind}')">Review move</button>`;
-  target.innerHTML = `<div><strong>${rows.length} selected</strong><div class="sub">${humanSize(total)}</div></div><div class="selection-actions"><button onclick="clearSelection('${kind}')">Clear</button>${actions}</div>`;
+  const visibleCount = visibleRows(kind, filteredRows(kind)).length;
+  target.innerHTML = `<div><strong>${rows.length} selected</strong><div class="sub">${humanSize(total)} - visible batch: ${visibleCount}</div></div><div class="selection-actions"><button onclick="clearSelection('${kind}')">Clear</button>${actions}</div>`;
 }
 
 function requestQuarantine(kind) {
@@ -457,17 +520,23 @@ function requestQuarantine(kind) {
   if (!rows.length) return showMessage("Select at least one file first.", false);
   const total = rows.reduce((sum, row) => sum + Number(row.size || 0), 0);
   const qbitOff = kind === "download" && lastData && !(lastData.protections || {}).qbittorrent_enabled;
+  const qbitConfirmation = qbitOff
+    ? `<div class="modal-warning"><strong>Seeding check is off.</strong> Confirm these downloads are finished before continuing.</div>
+      <label class="confirm-check"><input type="checkbox" id="qbitConfirm"> I verified these downloads are not actively needed for seeding.</label>`
+    : "";
   modalAction = { type: "quarantine", kind, paths: rows.map((row) => row.path) };
   document.getElementById("modalTitle").textContent = `Move ${rows.length} ${plural(rows.length, "file", "files")} to quarantine?`;
   document.getElementById("modalBody").innerHTML = `
     <div><strong>${humanSize(total)}</strong> will move out of its current folder and remain recoverable.</div>
-    ${qbitOff ? '<div class="modal-warning"><strong>Seeding check is off.</strong> Confirm these downloads are finished before continuing.</div>' : ""}
+    ${qbitConfirmation}
     <div class="modal-preview">${rows.slice(0, 6).map((row) => `<div>${escapeHtml(row.path)}</div>`).join("")}${rows.length > 6 ? `<div>+ ${rows.length - 6} more</div>` : ""}</div>`;
   const confirm = document.getElementById("modalConfirm");
   confirm.textContent = "Move to quarantine";
   confirm.className = "primary";
-  confirm.disabled = false;
+  confirm.disabled = qbitOff;
   openModal();
+  const qbitConfirm = document.getElementById("qbitConfirm");
+  if (qbitConfirm) qbitConfirm.addEventListener("change", () => { confirm.disabled = !qbitConfirm.checked; });
 }
 
 async function restoreSelected() {
@@ -580,6 +649,22 @@ function showMessage(text, error) {
 
 function emptyHtml(text) {
   return `<div class="empty">${escapeHtml(text)}</div>`;
+}
+
+function recommendationText(kind, row) {
+  if (kind === "download") {
+    if (row.keeper) return "Exact title and episode/year match found in the library.";
+    if (row.confidence === "Medium") return "Older recognizable download; review seeding and library status before moving.";
+    return row.reason || "Download file was not confirmed as imported by the media apps.";
+  }
+  if (kind === "duplicate") {
+    if (row.keeper) return "Larger duplicate candidate paired with the library file that stays.";
+    return row.reason || row.match || "Duplicate candidate needs review.";
+  }
+  if (kind === "library") {
+    return row.reason || row.match || "Video file is in a library folder but was not confirmed by the media apps.";
+  }
+  return row.reason || "";
 }
 
 function humanSize(bytes) {
