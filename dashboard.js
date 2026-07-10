@@ -143,6 +143,7 @@ function renderOverview(data) {
     ? `Last scan ${formatDate(data.generated_at)} · ${latest.files_scanned || 0} video files`
     : "Waiting for the first audit.";
   document.getElementById("qbitBanner").classList.toggle("show", hasAudit && !protections.qbittorrent_enabled);
+  renderStorageSafety(data.storage_safety || {});
 
   const cards = [
     {
@@ -193,6 +194,15 @@ function renderOverview(data) {
       <span><strong>${escapeHtml(action.title)}</strong><span class="path">${escapeHtml(action.body)}</span></span>
       <span class="action-value">${escapeHtml(action.value)}</span>
     </button>`).join("");
+}
+
+function renderStorageSafety(storage) {
+  const banner = document.getElementById("storageBanner");
+  if (!banner) return;
+  const ready = Boolean(storage.ready);
+  banner.classList.toggle("attention", !ready);
+  document.getElementById("storageTitle").textContent = ready ? "NAS quarantine ready" : "Storage check needed";
+  document.getElementById("storageBody").textContent = storage.message || "Checking storage safety...";
 }
 
 function renderScanned(rows) {

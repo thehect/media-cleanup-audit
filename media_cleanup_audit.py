@@ -1225,6 +1225,7 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
         "library_review": dashboard_candidate_rows(library_review_rows, limit=5000),
         "safe_candidates": dashboard_candidate_rows(library_review_rows, limit=5000),
         "quarantined": quarantined,
+        "storage_safety": quarantine_storage_status(config),
         "protections": {
             "qbittorrent_enabled": bool(config.get("qbittorrent", {}).get("enabled", False)),
             "jellyfin_enabled": bool(config.get("jellyfin", {}).get("enabled", False)),
@@ -1232,6 +1233,28 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
             "sonarr_enabled": bool(config.get("sonarr", {}).get("enabled", False)),
         },
         "reports": report_names(raw, state),
+    }
+
+
+def quarantine_storage_status(config: dict[str, Any]) -> dict[str, Any]:
+    root = quarantine_root(config)
+    fast_local = bool(config.get("quarantine", {}).get("local_fast_path", True))
+    exists = root.is_dir()
+    writable = os.access(root, os.W_OK) if exists else False
+    ready = fast_local and exists and writable
+    if ready:
+        message = "Video files stay on their NAS share. This folder only holds cleanup records."
+    elif not fast_local:
+        message = "Fast local quarantine is off. A move can copy videos onto another filesystem."
+    elif not exists:
+        message = "The NAS control folder is missing. Create it before quarantining files."
+    else:
+        message = "The NAS control folder is not writable. Quarantine actions will not be available."
+    return {
+        "ready": ready,
+        "fast_local": fast_local,
+        "control_root": str(root),
+        "message": message,
     }
 
 

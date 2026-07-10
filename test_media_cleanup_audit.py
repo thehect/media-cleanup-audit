@@ -32,6 +32,7 @@ from media_cleanup_audit import (
     library_index_rows,
     move_file,
     quarantine_destination,
+    quarantine_storage_status,
     scan_video_files,
     start_dashboard_action,
     valid_dashboard_session,
@@ -363,6 +364,24 @@ class MediaCleanupAuditTests(unittest.TestCase):
             destination_root, source_root = quarantine_destination(config, source)
             self.assertEqual(destination_root, downloads / ".mediacleanup-quarantine")
             self.assertEqual(source_root, downloads)
+
+    def test_storage_safety_reports_ready_for_writable_control_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "control"
+            root.mkdir()
+            status = quarantine_storage_status({"media_roots": {"erase_later": root.as_posix()}})
+            self.assertTrue(status["ready"])
+            self.assertTrue(status["fast_local"])
+
+    def test_storage_safety_warns_when_fast_quarantine_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "control"
+            root.mkdir()
+            status = quarantine_storage_status(
+                {"media_roots": {"erase_later": root.as_posix()}, "quarantine": {"local_fast_path": False}}
+            )
+            self.assertFalse(status["ready"])
+            self.assertIn("off", status["message"])
 
     def test_fast_local_quarantine_is_not_scanned_again(self):
         with tempfile.TemporaryDirectory() as tmp:
