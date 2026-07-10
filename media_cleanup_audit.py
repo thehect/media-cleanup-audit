@@ -1242,6 +1242,7 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
         "safe_candidates": dashboard_candidate_rows(library_review_rows, limit=5000),
         "quarantined": quarantined,
         "storage_safety": quarantine_storage_status(config),
+        "storage_volumes": storage_volume_rows(config),
         "protections": {
             "qbittorrent_enabled": qbit_available,
             "qbittorrent_configured": qbit_configured,
@@ -1252,6 +1253,52 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
         },
         "reports": report_names(raw, state),
     }
+
+
+def storage_volume_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+    roots = config.get("media_roots", {})
+    labels = [("Movies", roots.get("movies")), ("TV", roots.get("tv")), ("Anime", roots.get("anime")), ("Downloads", roots.get("downloads"))]
+    volumes: dict[tuple[int, int], dict[str, Any]] = {}
+    for label, root_text in labels:
+        if not root_text:
+            continue
+        root = Path(str(root_text))
+        try:
+            stat = root.stat()
+            usage = shutil.disk_usage(root)
+        except OSError:
+            continue
+        key = (int(stat.st_dev), int(usage.total))
+        volume = volumes.setdefault(
+            key,
+            {
+                "labels": [],
+                "roots": [],
+                "total": int(usage.total),
+                "used": int(usage.used),
+                "free": int(usage.free),
+            },
+        )
+        volume["labels"].append(label)
+        volume["roots"].append(str(root))
+    rows = []
+    for volume in volumes.values():
+        total = int(volume["total"])
+        used = int(volume["used"])
+        rows.append(
+            {
+                "label": " / ".join(volume["labels"]),
+                "roots": volume["roots"],
+                "total": total,
+                "used": used,
+                "free": int(volume["free"]),
+                "total_human": human_size(total),
+                "used_human": human_size(used),
+                "free_human": human_size(int(volume["free"])),
+                "used_percent": round((used / total) * 100) if total else 0,
+            }
+        )
+    return rows
 
 
 def quarantine_storage_status(config: dict[str, Any]) -> dict[str, Any]:

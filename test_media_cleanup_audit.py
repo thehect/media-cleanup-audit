@@ -35,6 +35,7 @@ from media_cleanup_audit import (
     quarantine_destination,
     quarantine_storage_status,
     scan_video_files,
+    storage_volume_rows,
     start_dashboard_action,
     run_audit,
     valid_dashboard_session,
@@ -384,6 +385,18 @@ class MediaCleanupAuditTests(unittest.TestCase):
             )
             self.assertFalse(status["ready"])
             self.assertIn("off", status["message"])
+
+    def test_storage_volume_rows_groups_roots_on_the_same_volume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            movies = root / "movies"
+            downloads = root / "downloads"
+            movies.mkdir()
+            downloads.mkdir()
+            rows = storage_volume_rows({"media_roots": {"movies": movies.as_posix(), "downloads": downloads.as_posix()}})
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["label"], "Movies / Downloads")
+            self.assertGreater(rows[0]["total"], 0)
 
     def test_qbittorrent_failure_does_not_abort_audit(self):
         with tempfile.TemporaryDirectory() as tmp:

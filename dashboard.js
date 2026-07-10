@@ -64,6 +64,7 @@ function render(data) {
   if (status.last_error) showMessage(status.last_error, true);
 
   renderOverview(data);
+  renderStorageVolumes(data.storage_volumes || []);
   renderScanned(data.scan_breakdown || []);
   renderDownloads(data.download_candidates || [], data.download_summary || {});
   renderCandidates("duplicate", data.duplicate_candidates || []);
@@ -71,6 +72,22 @@ function render(data) {
   renderQuarantine(data.quarantined || { rows: [], empty: true, items: 0, recoverable_size: "0 B" });
   renderLinks(data.reports || {});
   renderNavCounts(data);
+}
+
+function renderStorageVolumes(volumes) {
+  const target = document.getElementById("storageVolumes");
+  if (!target) return;
+  target.innerHTML = volumes.length ? volumes.map((volume) => {
+    const percent = Math.max(0, Math.min(100, Number(volume.used_percent || 0)));
+    const tone = percent >= 90 ? "danger" : percent >= 80 ? "attention" : "";
+    return `<div class="volume-card ${tone}">
+      <div class="volume-label">${escapeHtml(volume.label || "Storage")}</div>
+      <div class="volume-value">${escapeHtml(volume.free_human || "0 B")} free</div>
+      <div class="volume-detail">${escapeHtml(volume.used_human || "0 B")} used of ${escapeHtml(volume.total_human || "0 B")}</div>
+      <div class="volume-track" aria-label="${percent}% used"><span style="width:${percent}%"></span></div>
+      <div class="volume-percent">${percent}% used</div>
+    </div>`;
+  }).join("") : `<div class="empty-state">Mounted storage details are unavailable.</div>`;
 }
 
 function renderOverview(data) {
@@ -853,4 +870,5 @@ document.addEventListener("keydown", (event) => {
 });
 goTo(location.hash.replace("#", "") || "overview");
 poll();
+setInterval(() => { if (!document.hidden) poll(); }, 30000);
 if (running) setTimeout(poll, 1500);
