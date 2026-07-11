@@ -686,7 +686,8 @@ async function postAction(url, payload, successText, options = {}) {
     if (result.errors && result.errors.length) {
       showMessage(formatActionErrors(result.errors), true);
     } else {
-      showMessage(successText || "Done.", false);
+      const skipped = Number((result.skipped || []).length);
+      showMessage(skipped ? `${successText || "Done."} ${skipped} already-moved file${skipped === 1 ? " was" : "s were"} skipped.` : (successText || "Done."), false);
     }
     await poll();
   } catch (error) {

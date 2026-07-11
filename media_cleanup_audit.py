@@ -513,10 +513,7 @@ def scan_video_files(config: dict[str, Any]) -> ScanResult:
 
 
 def is_local_quarantine_path(config: dict[str, Any], path: Path) -> bool:
-    """Keep fast local quarantine folders out of future audits."""
-    quarantine = config.get("quarantine", {})
-    if not quarantine.get("local_fast_path", True):
-        return False
+    """Never offer files already inside the reserved local quarantine folder."""
     return ".mediacleanup-quarantine" in path.parts
 
 
@@ -1671,6 +1668,7 @@ def quarantine_selected(state: DashboardState, paths: list[str], progress: Calla
     manifest = read_quarantine_manifest(config)
     moved = []
     errors = []
+    skipped = []
     batch = datetime.now().strftime("%Y%m%d-%H%M%S")
     total = len(paths)
     for index, path_text in enumerate(paths, 1):
@@ -1678,7 +1676,7 @@ def quarantine_selected(state: DashboardState, paths: list[str], progress: Calla
             progress(index - 1, total, f"Checking {Path(path_text).name}")
         row = allowed.get(path_text)
         if not row:
-            errors.append({"path": path_text, "error": "file is no longer available for quarantine"})
+            skipped.append({"path": path_text, "reason": "file is no longer available for quarantine"})
             if progress:
                 progress(index, total, f"Skipped {Path(path_text).name}")
             continue
@@ -1732,7 +1730,7 @@ def quarantine_selected(state: DashboardState, paths: list[str], progress: Calla
             progress(index, total, f"Moved {source.name}")
     if moved:
         write_quarantine_manifest(config, manifest)
-    return {"moved": moved, "errors": errors, "quarantined": quarantine_inventory(config)}
+    return {"moved": moved, "errors": errors, "skipped": skipped, "quarantined": quarantine_inventory(config)}
 
 
 def restore_quarantined(state: DashboardState, ids: list[str], progress: Callable[..., None] | None = None) -> dict[str, Any]:

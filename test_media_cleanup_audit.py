@@ -411,7 +411,7 @@ class MediaCleanupAuditTests(unittest.TestCase):
             held.parent.mkdir(parents=True)
             live.write_bytes(b"live")
             held.write_bytes(b"held")
-            config = {"quarantine": {"local_fast_path": True}}
+            config = {"quarantine": {"local_fast_path": False}}
             self.assertTrue(dashboard_path_is_live(config, {"path": live.as_posix()}))
             self.assertFalse(dashboard_path_is_live(config, {"path": held.as_posix()}))
             self.assertFalse(dashboard_path_is_live(config, {"path": (downloads / "missing.mkv").as_posix()}))
