@@ -64,6 +64,7 @@ function render(data) {
   if (status.last_error) showMessage(status.last_error, true);
 
   renderOverview(data);
+  renderCleanupHistory(data.cleanup_history || {});
   renderStorageVolumes(data.storage_volumes || []);
   renderScanned(data.scan_breakdown || []);
   renderDownloads(data.download_candidates || [], data.download_summary || {});
@@ -72,6 +73,20 @@ function render(data) {
   renderQuarantine(data.quarantined || { rows: [], empty: true, items: 0, recoverable_size: "0 B" });
   renderLinks(data.reports || {});
   renderNavCounts(data);
+}
+
+function renderCleanupHistory(history) {
+  const files = Number(history.files || 0);
+  const target = document.getElementById("historySummary");
+  const list = document.getElementById("historyList");
+  document.getElementById("historySince").textContent = history.since ? `Since ${history.since}` : "No permanent deletes yet";
+  target.innerHTML = files
+    ? `<div><span>Files permanently removed</span><strong>${files}</strong></div><div><span>Space reclaimed</span><strong>${escapeHtml(history.space || "0 B")}</strong></div><div><span>Latest cleanup</span><strong>${escapeHtml(history.latest || "-")}</strong></div>`
+    : `<div class="history-empty">Items moved to Quarantine are recoverable. Permanent deletes will appear here.</div>`;
+  const days = history.days || [];
+  list.innerHTML = days.length
+    ? days.map((day) => `<div class="history-day"><span>${escapeHtml(day.date)}</span><span>${day.files} ${plural(day.files, "file", "files")}</span><strong>${escapeHtml(day.space || "0 B")}</strong></div>`).join("")
+    : "";
 }
 
 function renderStorageVolumes(volumes) {

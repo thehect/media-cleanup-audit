@@ -1246,6 +1246,7 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
         "library_review": dashboard_candidate_rows(library_review_rows, limit=5000),
         "safe_candidates": dashboard_candidate_rows(library_review_rows, limit=5000),
         "quarantined": quarantined,
+        "cleanup_history": cleanup_history(config),
         "storage_safety": quarantine_storage_status(config),
         "storage_volumes": storage_volume_rows(config),
         "protections": {
@@ -1257,6 +1258,30 @@ def dashboard_data(state: DashboardState) -> dict[str, Any]:
             "sonarr_enabled": bool(config.get("sonarr", {}).get("enabled", False)),
         },
         "reports": report_names(raw, state),
+    }
+
+
+def cleanup_history(config: dict[str, Any]) -> dict[str, Any]:
+    deleted = [row for row in read_quarantine_manifest(config) if row.get("status") == "deleted"]
+    deleted.sort(key=lambda row: str(row.get("deleted_at", "")), reverse=True)
+    total_bytes = sum(int(row.get("size", 0) or 0) for row in deleted)
+    by_date: dict[str, dict[str, Any]] = {}
+    for row in deleted:
+        date = str(row.get("deleted_at", ""))[:10] or "Unknown date"
+        bucket = by_date.setdefault(date, {"date": date, "files": 0, "bytes": 0})
+        bucket["files"] += 1
+        bucket["bytes"] += int(row.get("size", 0) or 0)
+    days = []
+    for bucket in sorted(by_date.values(), key=lambda item: str(item["date"]), reverse=True)[:12]:
+        bucket["space"] = human_size(int(bucket["bytes"]))
+        days.append(bucket)
+    dates = [str(row.get("deleted_at", ""))[:10] for row in deleted if row.get("deleted_at")]
+    return {
+        "files": len(deleted),
+        "space": human_size(total_bytes),
+        "since": min(dates) if dates else "",
+        "latest": max(dates) if dates else "",
+        "days": days,
     }
 
 
@@ -1967,7 +1992,7 @@ def serve_dashboard(config_path: str, output_dir: str | Path, host: str, port: i
 
         def send_asset_file(self, name: str) -> None:
             safe_name = Path(urllib.parse.unquote(name)).name
-            if safe_name not in {"dashboard.css", "dashboard.js"}:
+            if safe_name not in {"dashboard.css", "dashboard.js", "pixel-muncher.png"}:
                 self.send_error(404)
                 return
             path = Path(__file__).resolve().parent / safe_name

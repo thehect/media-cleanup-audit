@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY media_cleanup_audit.py .
 COPY dashboard.html dashboard.css dashboard.js ./
+COPY assets/pixel-muncher.png ./pixel-muncher.png
 COPY config.example.yml .
 
 EXPOSE 6996

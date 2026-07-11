@@ -14,6 +14,7 @@ from media_cleanup_audit import (
     classify_groups,
     canonicalize_path,
     classify_unmatched,
+    cleanup_history,
     dashboard_candidate_rows,
     dashboard_path_is_live,
     delete_quarantined,
@@ -414,6 +415,19 @@ class MediaCleanupAuditTests(unittest.TestCase):
             self.assertTrue(dashboard_path_is_live(config, {"path": live.as_posix()}))
             self.assertFalse(dashboard_path_is_live(config, {"path": held.as_posix()}))
             self.assertFalse(dashboard_path_is_live(config, {"path": (downloads / "missing.mkv").as_posix()}))
+
+    def test_cleanup_history_totals_permanently_deleted_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = write_action_config(root)
+            _, row = write_quarantined_file(root)
+            row.update({"status": "deleted", "deleted_at": "2026-07-11T12:00:00", "size": 2 * 1024 * 1024})
+            qroot = root / "quarantine"
+            (qroot / "mediacleanup-quarantine.json").write_text(json.dumps([row]), encoding="utf-8")
+            history = cleanup_history({"media_roots": {"erase_later": qroot.as_posix()}})
+            self.assertEqual(history["files"], 1)
+            self.assertEqual(history["since"], "2026-07-11")
+            self.assertEqual(history["days"][0]["space"], "2.0 MB")
 
     def test_qbittorrent_failure_does_not_abort_audit(self):
         with tempfile.TemporaryDirectory() as tmp:
